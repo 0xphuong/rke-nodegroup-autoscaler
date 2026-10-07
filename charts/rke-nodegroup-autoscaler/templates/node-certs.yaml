@@ -1,0 +1,15 @@
+{{- with .Values.nodeCerts.files }}
+# Created only when nodeCerts.files is set in values. The shared RKE node certificates (kube-node,
+# kube-proxy) that every new node gets through its join script.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "ngas.nodeCertsSecret" $ }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "ngas.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  {{- range $name := list "kube-ca.pem" "kube-node.pem" "kube-node-key.pem" "kube-proxy.pem" "kube-proxy-key.pem" "kubecfg-kube-node.yaml" "kubecfg-kube-proxy.yaml" }}
+  {{ $name }}: {{ index $.Values.nodeCerts.files $name | quote }}
+  {{- end }}
+{{- end }}

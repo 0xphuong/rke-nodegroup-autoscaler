@@ -84,6 +84,9 @@ spec:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/config: {{ include (print $.Template.BasePath "/provider-config.yaml") . | sha256sum }}
         checksum/bootstrap-ips: {{ toJson .Values.bootstrap.nodeIPs | sha256sum }}
+        {{- with .Values.nodeCerts.files }}
+        checksum/node-certs: {{ toJson . | sha256sum }}
+        {{- end }}
         checksum/cloud-init: {{ printf "%s%s" .Values.bootstrap.cloudConfig (toJson .Values.bootstrap.initScripts) | sha256sum }}
         {{- if include "ngas.createCredentials" . }}
         # restart the provider when the credentials in values change (the hash reveals nothing)
@@ -162,7 +165,7 @@ spec:
         - name: worker-template
           configMap: {name: {{ include "ngas.workerTemplateConfigMap" . }}}
         - name: node-certs
-          secret: {secretName: {{ .Values.nodeCerts.existingSecret }}, defaultMode: 0400}
+          secret: {secretName: {{ include "ngas.nodeCertsSecret" . }}, defaultMode: 0400}
         - name: grpc-tls
           secret: {secretName: {{ $name }}-grpc-tls, defaultMode: 0400}
         - name: bootstrap-tls

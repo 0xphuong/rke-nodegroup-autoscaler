@@ -51,6 +51,10 @@ nodeAffinity:
 {{- .Values.vngcloud.credentials.existingSecret | default "vngcloud-credentials" -}}
 {{- end -}}
 
+{{- define "ngas.nodeCertsSecret" -}}
+{{- .Values.nodeCerts.existingSecret | default "rke-node-certs" -}}
+{{- end -}}
+
 {{- define "ngas.workerTemplateConfigMap" -}}
 {{- .Values.workerTemplate.existingConfigMap | default (printf "%s-worker-template" (include "ngas.fullname" .)) -}}
 {{- end -}}
@@ -62,7 +66,14 @@ nodeAffinity:
 {{- end -}}
 {{- if not .Values.nodeGroups -}}{{- fail "nodeGroups: define at least one node group" -}}{{- end -}}
 {{- if not .Values.bootstrap.nodeIPs -}}{{- fail "bootstrap.nodeIPs: list the IPs of existing nodes new VMs can reach" -}}{{- end -}}
-{{- if not .Values.nodeCerts.existingSecret -}}{{- fail "nodeCerts.existingSecret: create the node certificate Secret first (see values.yaml)" -}}{{- end -}}
+{{- $files := .Values.nodeCerts.files | default dict -}}
+{{- if $files -}}
+{{- range list "kube-ca.pem" "kube-node.pem" "kube-node-key.pem" "kube-proxy.pem" "kube-proxy-key.pem" "kubecfg-kube-node.yaml" "kubecfg-kube-proxy.yaml" -}}
+{{- if not (index $files .) -}}{{- fail (printf "nodeCerts.files: %s is missing or empty (all 7 files are needed)" .) -}}{{- end -}}
+{{- end -}}
+{{- else if not .Values.nodeCerts.existingSecret -}}
+{{- fail "nodeCerts: set existingSecret (a Secret created from a worker) or files (see values.yaml)" -}}
+{{- end -}}
 {{- $c := .Values.vngcloud.credentials -}}
 {{- if and (or $c.clientId $c.clientSecret) (not (and $c.clientId $c.clientSecret)) -}}
 {{- fail "vngcloud.credentials: clientId and clientSecret must be set together" -}}

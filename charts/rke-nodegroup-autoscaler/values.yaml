@@ -64,7 +64,19 @@ workerTemplate:
 #     kube-proxy.pem kube-proxy-key.pem kubecfg-kube-node.yaml kubecfg-kube-proxy.yaml' | tar xzf - -C node-certs/
 #   kubectl -n <namespace> create secret generic <name> --from-file=node-certs/
 nodeCerts:
+  # a) existingSecret: name of a Secret you created as above (recommended);
+  # b) files: the 7 files inline; the chart creates the Secret (name: existingSecret or rke-node-certs).
+  #    kube-node-key.pem gives near-admin access to an RKE1 cluster: keep such a values file out of git.
   existingSecret: ""
+  files: {}
+  #  kube-ca.pem: |
+  #    -----BEGIN CERTIFICATE-----
+  #  kube-node.pem: | ...
+  #  kube-node-key.pem: | ...
+  #  kube-proxy.pem: | ...
+  #  kube-proxy-key.pem: | ...
+  #  kubecfg-kube-node.yaml: | ...
+  #  kubecfg-kube-proxy.yaml: | ...
 
 # --- Bootstrap: how a new VM fetches its join script ----------------------------------------------------------
 bootstrap:
