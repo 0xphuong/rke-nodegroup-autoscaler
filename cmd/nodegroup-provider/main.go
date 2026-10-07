@@ -28,6 +28,7 @@ import (
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/cloud"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/cloud/vngcloud"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/config"
+	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/preflight"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/protos"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/provider"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/state"
@@ -100,6 +101,17 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 	if err != nil {
 		return err
 	}
+	// refuse inputs that would produce broken nodes
+	if err := preflight.Bundle(bundle, time.Now(), 30*24*time.Hour, func(w string) { log.Warn("node certificates", "warning", w) }); err != nil {
+		return fmt.Errorf("node certificates: %w", err)
+	}
+	if err := preflight.ClusterCA(bundle, restCfg.TLSClientConfig.CAFile); err != nil {
+		return err
+	}
+	if err := preflight.Template(ctx, kube, tmpl); err != nil {
+		return err
+	}
+
 	store := state.New(kube, namespace, stateCM)
 	if err := store.Load(ctx); err != nil {
 		return err

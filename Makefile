@@ -14,7 +14,7 @@ lint:
 	go vet ./...
 
 image:
-	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
+	docker buildx build --platform linux/amd64 --load --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
 chart-lint:
 	helm lint $(CHART) -f $(CHART)/ci/test-values.yaml

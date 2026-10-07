@@ -6,3 +6,6 @@
 values-*.local.yaml
 worker-template*.local.json
 node-certs/
+
+# per-cluster deployment inputs (real IPs, worker templates)
+/deploy/

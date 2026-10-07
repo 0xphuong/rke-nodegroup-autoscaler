@@ -97,6 +97,16 @@ helm upgrade --install ngas charts/rke-nodegroup-autoscaler -n $NS \
   -f values-dev.local.yaml --set-file workerTemplate.json=worker-template.local.json
 ```
 
+Provider **kiểm tra trước khi chạy** (`internal/preflight`) và từ chối khởi động nếu có điểm lệch:
+- `kube-node` và `kube-proxy` không phải cert client do `kube-ca.pem` ký, hoặc key không khớp cert;
+- `kube-ca.pem` không phải CA của cluster đang chạy, tức cert copy nhầm từ cluster khác;
+- kubeconfig của node không trỏ tới `https://127.0.0.1:6443`;
+- image kubelet trong template khác phiên bản kubelet của cluster;
+- `CP_HOSTS` trong template khác danh sách control plane hiện tại.
+
+Hai điều kiện cuối thường xảy ra sau một lần `rke up`. Ngoài ra, cert còn dưới 30 ngày là hết hạn thì provider
+ghi cảnh báo vào log.
+
 **Sau mỗi lần `rke up` làm thay đổi cluster** (upgrade k8s, đổi tham số kubelet, đổi control plane): lấy lại
 template worker và chạy `helm upgrade`. RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
 cũng từ chối template có `generate_serving_certificate`, vì khi đó mỗi node cần cert riêng.
@@ -136,8 +146,15 @@ Gỡ lỗi trên VM: `/var/log/rke-nodegroup-bootstrap.log`, `docker logs kubele
 make test           # go test -race
 make chart-lint
 make chart-template
-make image          # cần docker daemon
+make image          # docker buildx, linux/amd64
 ```
+
+CI (`.github/workflows/ci.yaml`): mỗi lần push sẽ chạy test và lint chart. Tag `vX.Y.Z` thì build image cho
+amd64 và arm64, đẩy lên `ghcr.io/<owner>/rke-nodegroup-autoscaler:X.Y.Z`, và đẩy chart lên
+`oci://ghcr.io/<owner>/charts`.
+
+Thông tin deploy của từng cluster (values, template worker thật) để trong `deploy/<cluster>/`. Thư mục này nằm
+trong `.gitignore`, không bao giờ được commit.
 
 `internal/protos` là mã sinh từ `externalgrpc.proto` của Cluster Autoscaler, lấy từ tag `cluster-autoscaler-1.32.7`
 (Apache-2.0, giữ nguyên header).
@@ -151,7 +168,9 @@ PoC. Phần đã kiểm chứng:
 - mTLS gRPC chạy thật;
 - `helm lint` và `helm template`;
 - config do chart sinh được đọc lại bằng chính code Go;
-- SAN và chain của các chứng chỉ chart sinh.
+- SAN và chain của các chứng chỉ chart sinh;
+- build image `linux/amd64` chạy được;
+- `preflight.Template` qua khi chạy với một cluster RKE 1.32.6 thật, bằng template lấy từ worker của chính cluster đó.
 
 **Chưa chạy với VNG Cloud thật hay trên cluster thật.** Tên trạng thái server của vServer (`ACTIVE`, `ERROR`...),
 giới hạn tên và tag VM là suy ra từ SDK. Cần một vòng test trên môi trường dev trước khi dùng thật.
