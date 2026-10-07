@@ -46,8 +46,9 @@ Node mới được dựng **y hệt một worker RKE có sẵn**: provider lấ
   chối đều trả cùng một mã 403.
 - **Giới hạn còn lại:** cert `kube-node` và `kube-proxy` của RKE1 **dùng chung cho mọi node**. Ai lấy được cert từ
   một node là có quyền của một node, gồm sửa label và taint của mọi node, vì RKE1 không bật NodeRestriction
-  theo từng node. Muốn bỏ giới hạn này thì phải bật TLS bootstrapping: thêm `extra_args` cho kube-api và
-  kube-controller-manager, rồi chạy `rke up` một lần.
+  theo từng node. Giải pháp này **cố ý không sửa RKE hay cluster hiện tại** (không đổi `cluster.yml`, không
+  `rke up`), nên chấp nhận giới hạn này. Muốn bỏ nó thì phải bật TLS bootstrapping qua `extra_args` và chạy
+  `rke up`, tức là thay đổi cluster, nằm ngoài phạm vi repo này.
 
 ## Cài đặt
 
