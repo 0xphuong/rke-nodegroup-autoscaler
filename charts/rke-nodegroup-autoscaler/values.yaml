@@ -41,9 +41,14 @@ vngcloud:
   projectId: ""
   zoneId: ""
   credentials:
-    # Secret with keys clientId and clientSecret of a VNG Cloud service account that can only create and
-    # delete servers in this project. Create it out of band; do not put credentials in values files.
+    # VNG Cloud service account (client_id / client_secret) that can only create and delete servers in this
+    # project. Two ways:
+    #  a) existingSecret: name of a Secret you created, with keys clientId and clientSecret (recommended);
+    #  b) clientId + clientSecret here: the chart creates the Secret "vngcloud-credentials" (or existingSecret's
+    #     name if also set). Keep such a values file out of git (e.g. a git-ignored secrets.yaml).
     existingSecret: ""
+    clientId: ""
+    clientSecret: ""
 
 # --- What a new node runs -----------------------------------------------------------------------------------
 # docker inspect of an existing, healthy RKE worker (no secrets in it). Take it once per cluster and again after

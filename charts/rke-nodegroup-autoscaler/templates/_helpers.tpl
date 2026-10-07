@@ -41,6 +41,15 @@ nodeAffinity:
             operator: DoesNotExist
 {{- end -}}
 
+{{/* the chart creates the credentials Secret when clientId/clientSecret are given in values */}}
+{{- define "ngas.createCredentials" -}}
+{{- if and .Values.vngcloud.credentials.clientId .Values.vngcloud.credentials.clientSecret -}}true{{- end -}}
+{{- end -}}
+
+{{- define "ngas.credentialsSecret" -}}
+{{- .Values.vngcloud.credentials.existingSecret | default "vngcloud-credentials" -}}
+{{- end -}}
+
 {{- define "ngas.workerTemplateConfigMap" -}}
 {{- .Values.workerTemplate.existingConfigMap | default (printf "%s-worker-template" (include "ngas.fullname" .)) -}}
 {{- end -}}
@@ -53,7 +62,13 @@ nodeAffinity:
 {{- if not .Values.nodeGroups -}}{{- fail "nodeGroups: define at least one node group" -}}{{- end -}}
 {{- if not .Values.bootstrap.nodeIPs -}}{{- fail "bootstrap.nodeIPs: list the IPs of existing nodes new VMs can reach" -}}{{- end -}}
 {{- if not .Values.nodeCerts.existingSecret -}}{{- fail "nodeCerts.existingSecret: create the node certificate Secret first (see values.yaml)" -}}{{- end -}}
-{{- if not .Values.vngcloud.credentials.existingSecret -}}{{- fail "vngcloud.credentials.existingSecret is required" -}}{{- end -}}
+{{- $c := .Values.vngcloud.credentials -}}
+{{- if and (or $c.clientId $c.clientSecret) (not (and $c.clientId $c.clientSecret)) -}}
+{{- fail "vngcloud.credentials: clientId and clientSecret must be set together" -}}
+{{- end -}}
+{{- if and (not $c.existingSecret) (not (and $c.clientId $c.clientSecret)) -}}
+{{- fail "vngcloud.credentials: set existingSecret, or clientId and clientSecret" -}}
+{{- end -}}
 {{- if not (and .Values.vngcloud.vserverEndpoint .Values.vngcloud.projectId) -}}{{- fail "vngcloud.vserverEndpoint and vngcloud.projectId are required" -}}{{- end -}}
 {{- if and (not .Values.workerTemplate.json) (not .Values.workerTemplate.existingConfigMap) -}}
 {{- fail "workerTemplate: pass --set-file workerTemplate.json=<docker inspect of a worker> or workerTemplate.existingConfigMap" -}}

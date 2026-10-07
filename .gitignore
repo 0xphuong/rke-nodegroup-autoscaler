@@ -9,3 +9,7 @@ node-certs/
 
 # per-cluster deployment inputs (real IPs, worker templates)
 /deploy/
+
+# local helm/helmfile inputs may hold credentials
+/helm_vars/
+secrets*.yaml
