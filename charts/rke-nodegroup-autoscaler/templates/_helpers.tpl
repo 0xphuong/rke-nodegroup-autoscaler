@@ -1,8 +1,9 @@
+{{/* at most 40 chars: the longest suffix is "-provider-bootstrap" and Service names stop at 63 */}}
 {{- define "ngas.fullname" -}}
-{{- if contains .Chart.Name .Release.Name -}}
-{{- .Release.Name | trunc 50 | trimSuffix "-" -}}
+{{- if contains "nodegroup-autoscaler" .Release.Name -}}
+{{- .Release.Name | trunc 40 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 50 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 40 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
