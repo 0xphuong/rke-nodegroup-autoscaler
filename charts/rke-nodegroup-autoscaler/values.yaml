@@ -76,7 +76,7 @@ bootstrap:
 # --- nodegroup-provider -------------------------------------------------------------------------------------
 provider:
   image:
-    repository: ghcr.io/0xphuong/rke-nodegroup-autoscaler
+    repository: docker.io/binhphuong/rke-nodegroup-autoscaler
     tag: ""                  # default: chart appVersion
     pullPolicy: IfNotPresent
   imagePullSecrets: []

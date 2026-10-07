@@ -149,9 +149,11 @@ make chart-template
 make image          # docker buildx, linux/amd64
 ```
 
+Image: `docker.io/binhphuong/rke-nodegroup-autoscaler` (public, linux/amd64 + linux/arm64).
+
 CI (`.github/workflows/ci.yaml`): mỗi lần push sẽ chạy test và lint chart. Tag `vX.Y.Z` thì build image cho
-amd64 và arm64, đẩy lên `ghcr.io/<owner>/rke-nodegroup-autoscaler:X.Y.Z`, và đẩy chart lên
-`oci://ghcr.io/<owner>/charts`.
+amd64 và arm64, đẩy lên `docker.io/binhphuong/rke-nodegroup-autoscaler:X.Y.Z`, và đẩy chart lên
+`oci://registry-1.docker.io/<user>`. Cần hai secret của repo: `DOCKERHUB_USERNAME` và `DOCKERHUB_TOKEN`.
 
 Thông tin deploy của từng cluster (values, template worker thật) để trong `deploy/<cluster>/`. Thư mục này nằm
 trong `.gitignore`, không bao giờ được commit.

@@ -1,4 +1,4 @@
-IMAGE   ?= ghcr.io/0xphuong/rke-nodegroup-autoscaler
+IMAGE   ?= docker.io/binhphuong/rke-nodegroup-autoscaler
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 CHART   := charts/rke-nodegroup-autoscaler
 
