@@ -43,7 +43,9 @@ type container struct {
 	} `json:"HostConfig"`
 }
 
-func (c *container) tokens() []string { return append(append([]string{}, c.Config.Entrypoint...), c.Config.Cmd...) }
+func (c *container) tokens() []string {
+	return append(append([]string{}, c.Config.Entrypoint...), c.Config.Cmd...)
+}
 
 func (c *container) flag(name string) string {
 	for _, t := range c.tokens() {

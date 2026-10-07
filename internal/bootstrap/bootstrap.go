@@ -77,6 +77,8 @@ type UserDataParams struct {
 	CACert    string // PEM of the CA that signed the bootstrap server certificate
 	PreJoin   string
 	Deadline  time.Duration
+	// Parts run before the join script (multi-part user_data); see LoadParts.
+	Parts []Part
 }
 
 var userDataTmpl = template.Must(template.New("userdata").Funcs(template.FuncMap{"q": workerplane.Quote}).Parse(
@@ -116,11 +118,22 @@ echo "$(date -Is) bootstrap {{.NodeName}} gave up"
 exit 1
 `))
 
-// UserData renders the cloud-init user_data (a shell script) of one VM.
+// UserData renders the cloud-init user_data of one VM: the join script alone, or, with extra parts (site
+// cloud-config, base setup scripts), a multi-part document with the join script last.
 func UserData(p UserDataParams) (string, error) {
 	if p.NodeName == "" || p.Token == "" || len(p.Endpoints) == 0 || p.CACert == "" {
 		return "", fmt.Errorf("user data needs node name, token, endpoints and CA certificate")
 	}
+	script, err := joinBootstrapScript(p)
+	if err != nil || len(p.Parts) == 0 {
+		return script, err
+	}
+	parts := append(append([]Part{}, p.Parts...),
+		Part{Filename: "rke-nodegroup-join.sh", ContentType: "text/x-shellscript", Content: script})
+	return multipartUserData(parts)
+}
+
+func joinBootstrapScript(p UserDataParams) (string, error) {
 	var buf bytes.Buffer
 	err := userDataTmpl.Execute(&buf, map[string]any{
 		"NodeName":        p.NodeName,

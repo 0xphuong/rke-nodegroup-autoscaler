@@ -99,12 +99,12 @@ func TestBootstrapDenials(t *testing.T) {
 		body  string
 		at    time.Time
 	}{
-		"no token":      {func(string) string { return "" }, `{"name":"dev-app-n1"}`, now},
-		"wrong token":   {func(string) string { return "nope" }, `{"name":"dev-app-n1"}`, now},
-		"other node":    {func(t string) string { return t }, `{"name":"dev-app-n2"}`, now},
-		"expired":       {func(t string) string { return t }, `{"name":"dev-app-n1"}`, now.Add(11 * time.Minute)},
-		"malformed":     {func(t string) string { return t }, `not json`, now},
-		"empty name":    {func(t string) string { return t }, `{"name":""}`, now},
+		"no token":    {func(string) string { return "" }, `{"name":"dev-app-n1"}`, now},
+		"wrong token": {func(string) string { return "nope" }, `{"name":"dev-app-n1"}`, now},
+		"other node":  {func(t string) string { return t }, `{"name":"dev-app-n2"}`, now},
+		"expired":     {func(t string) string { return t }, `{"name":"dev-app-n1"}`, now.Add(11 * time.Minute)},
+		"malformed":   {func(t string) string { return t }, `not json`, now},
+		"empty name":  {func(t string) string { return t }, `{"name":""}`, now},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, token := newServer(t, now)

@@ -73,7 +73,13 @@ bootstrap:
   nodeIPs: []
   nodePort: 31443
   tokenTTL: 15m
-  # Shell run on the VM before the join, e.g. when the image has no docker yet:
+  # Site cloud-init run before the join, as in a Terraform cloudinit_config: a #cloud-config document
+  # (users, ssh keys, sshd port...) and #! scripts (base packages, docker). Kept in a Secret, but anything here
+  # still ends up in the VM's user_data, which the cloud console and the metadata API expose: no passwords.
+  #   --set-file bootstrap.cloudConfig=cloud-config.tpl --set-file 'bootstrap.initScripts[0]=custom-init.sh'
+  cloudConfig: ""
+  initScripts: []
+  # Shell run inside the join script before the join, e.g. when the image has no docker yet:
   #   preJoinScript: |
   #     curl -fsSL https://releases.rancher.com/install-docker/28.1.sh | sh
   preJoinScript: ""

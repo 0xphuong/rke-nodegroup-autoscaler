@@ -1,0 +1,18 @@
+{{- if or .Values.bootstrap.cloudConfig .Values.bootstrap.initScripts }}
+# Site cloud-init documents, put in front of the join script in every VM's user_data (multi-part).
+# A Secret rather than a ConfigMap: these usually carry ssh keys and user setup.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "ngas.provider" . }}-cloud-init
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  {{- with .Values.bootstrap.cloudConfig }}
+  00-cloud-config: {{ . | quote }}
+  {{- end }}
+  {{- range $i, $s := .Values.bootstrap.initScripts }}
+  {{ printf "%02d-init.sh" (add $i 10) }}: {{ $s | quote }}
+  {{- end }}
+{{- end }}

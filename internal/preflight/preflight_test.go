@@ -49,7 +49,9 @@ func (ca issuer) client(t *testing.T, cn string, notAfter time.Time) (certPEM, k
 		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
-func (ca issuer) pem() []byte { return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw}) }
+func (ca issuer) pem() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw})
+}
 
 func bundle(t *testing.T, ca issuer, nodeNotAfter time.Time) bootstrap.Bundle {
 	t.Helper()

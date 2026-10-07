@@ -107,6 +107,17 @@ Provider **kiểm tra trước khi chạy** (`internal/preflight`) và từ ch�
 Hai điều kiện cuối thường xảy ra sau một lần `rke up`. Ngoài ra, cert còn dưới 30 ngày là hết hạn thì provider
 ghi cảnh báo vào log.
 
+**Cloud-init riêng của bạn** (user, SSH key, cổng sshd, cài gói và Docker): truyền qua `bootstrap.cloudConfig`
+(một file `#cloud-config`) và `bootstrap.initScripts` (các script `#!`):
+
+```bash
+--set-file bootstrap.cloudConfig=cloud-config.tpl --set-file 'bootstrap.initScripts[0]=custom-init.sh'
+```
+
+`user_data` khi đó là multipart, giống `cloudinit_config` của Terraform. Các phần của bạn chạy trước, script join
+của provider chạy cuối. Chart giữ các file này trong Secret (không dùng ConfigMap). Tuy vậy nội dung vẫn nằm trong
+`user_data` của VM, nơi console cloud và metadata API đều đọc được, nên **đừng để mật khẩu trong đó**.
+
 **Sau mỗi lần `rke up` làm thay đổi cluster** (upgrade k8s, đổi tham số kubelet, đổi control plane): lấy lại
 template worker và chạy `helm upgrade`. RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
 cũng từ chối template có `generate_serving_certificate`, vì khi đó mỗi node cần cert riêng.

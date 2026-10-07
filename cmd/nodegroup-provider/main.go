@@ -47,18 +47,19 @@ func main() {
 		grpcTLSDir     = flag.String("grpc-tls", "/etc/nodegroup-provider/grpc-tls", "directory with tls.crt, tls.key and ca.crt for mTLS with cluster-autoscaler")
 		bootAddr       = flag.String("bootstrap-listen", ":8443", "HTTPS listen address for new VMs")
 		bootTLSDir     = flag.String("bootstrap-tls", "/etc/nodegroup-provider/bootstrap-tls", "directory with tls.crt, tls.key and ca.crt of the bootstrap server")
+		cloudInitDir   = flag.String("cloud-init", "/etc/nodegroup-provider/cloud-init", "optional directory of site cloud-init documents (#cloud-config or #! scripts) run before the join, in name order")
 		stateConfigMap = flag.String("state-configmap", "nodegroup-provider-state", "ConfigMap holding the instance records")
 		interval       = flag.Duration("reconcile-interval", 30*time.Second, "how often instances are reconciled")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(log, *configPath, *templatePath, *bundleDir, *grpcAddr, *grpcTLSDir, *bootAddr, *bootTLSDir, *stateConfigMap, *interval); err != nil {
+	if err := run(log, *configPath, *templatePath, *bundleDir, *grpcAddr, *grpcTLSDir, *bootAddr, *bootTLSDir, *cloudInitDir, *stateConfigMap, *interval); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTLSDir, bootAddr, bootTLSDir, stateCM string, interval time.Duration) error {
+func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTLSDir, bootAddr, bootTLSDir, cloudInitDir, stateCM string, interval time.Duration) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -81,6 +82,13 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 	bootCA, err := os.ReadFile(bootTLSDir + "/ca.crt")
 	if err != nil {
 		return err
+	}
+	cloudInit, err := bootstrap.LoadParts(cloudInitDir)
+	if err != nil {
+		return err
+	}
+	for _, part := range cloudInit {
+		log.Info("cloud-init part", "file", part.Filename, "type", part.ContentType, "bytes", len(part.Content))
 	}
 
 	var driver cloud.Driver
@@ -118,7 +126,7 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 	}
 
 	p := &provider.Provider{
-		Config: cfg, Driver: driver, Store: store, Kube: kube, BootCA: string(bootCA), Log: log,
+		Config: cfg, Driver: driver, Store: store, Kube: kube, BootCA: string(bootCA), CloudInit: cloudInit, Log: log,
 		Now: time.Now, NameRand: provider.RandomSuffix,
 	}
 

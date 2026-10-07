@@ -38,14 +38,16 @@ import (
 type Provider struct {
 	protos.UnimplementedCloudProviderServer
 
-	Config   *config.Config
-	Driver   cloud.Driver
-	Store    *state.Store
-	Kube     kubernetes.Interface
-	BootCA   string // PEM put into user_data so the VM can verify the bootstrap server
-	Log      *slog.Logger
-	Now      func() time.Time
-	NameRand func() string
+	Config *config.Config
+	Driver cloud.Driver
+	Store  *state.Store
+	Kube   kubernetes.Interface
+	BootCA string // PEM put into user_data so the VM can verify the bootstrap server
+	// CloudInit: site cloud-init documents (users, ssh, base packages) that run before the join script
+	CloudInit []bootstrap.Part
+	Log       *slog.Logger
+	Now       func() time.Time
+	NameRand  func() string
 
 	// scaling operations on the same provider are serialized; they are rare and each is short
 	mu sync.Mutex
@@ -146,6 +148,7 @@ func (p *Provider) createOne(ctx context.Context, g config.NodeGroup, name strin
 	userData, err := bootstrap.UserData(bootstrap.UserDataParams{
 		NodeName: name, Token: token, Endpoints: p.Config.Bootstrap.Endpoints, CACert: p.BootCA,
 		PreJoin: p.Config.Bootstrap.PreJoinScript, Deadline: p.Config.Bootstrap.TokenTTL.Duration,
+		Parts: p.CloudInit,
 	})
 	if err != nil {
 		_ = p.Store.Remove(ctx, name)

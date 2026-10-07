@@ -84,6 +84,7 @@ spec:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/config: {{ include (print $.Template.BasePath "/provider-config.yaml") . | sha256sum }}
         checksum/bootstrap-ips: {{ toJson .Values.bootstrap.nodeIPs | sha256sum }}
+        checksum/cloud-init: {{ printf "%s%s" .Values.bootstrap.cloudConfig (toJson .Values.bootstrap.initScripts) | sha256sum }}
         {{- if include "ngas.createCredentials" . }}
         # restart the provider when the credentials in values change (the hash reveals nothing)
         checksum/credentials: {{ printf "%s/%s" .Values.vngcloud.credentials.clientId .Values.vngcloud.credentials.clientSecret | sha256sum }}
@@ -121,6 +122,7 @@ spec:
             - --node-certs=/etc/nodegroup-provider/node-certs
             - --grpc-tls=/etc/nodegroup-provider/grpc-tls
             - --bootstrap-tls=/etc/nodegroup-provider/bootstrap-tls
+            - --cloud-init=/etc/nodegroup-provider/cloud-init
             - --state-configmap={{ $name }}-state
             - --reconcile-interval={{ .Values.provider.reconcileInterval }}
           env:
@@ -151,6 +153,9 @@ spec:
             - {name: node-certs, mountPath: /etc/nodegroup-provider/node-certs, readOnly: true}
             - {name: grpc-tls, mountPath: /etc/nodegroup-provider/grpc-tls, readOnly: true}
             - {name: bootstrap-tls, mountPath: /etc/nodegroup-provider/bootstrap-tls, readOnly: true}
+            {{- if or .Values.bootstrap.cloudConfig .Values.bootstrap.initScripts }}
+            - {name: cloud-init, mountPath: /etc/nodegroup-provider/cloud-init, readOnly: true}
+            {{- end }}
       volumes:
         - name: config
           configMap: {name: {{ $name }}-config}
@@ -162,6 +167,10 @@ spec:
           secret: {secretName: {{ $name }}-grpc-tls, defaultMode: 0400}
         - name: bootstrap-tls
           secret: {secretName: {{ $name }}-bootstrap-tls, defaultMode: 0400}
+        {{- if or .Values.bootstrap.cloudConfig .Values.bootstrap.initScripts }}
+        - name: cloud-init
+          secret: {secretName: {{ $name }}-cloud-init, defaultMode: 0400}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
