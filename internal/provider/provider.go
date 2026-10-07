@@ -343,8 +343,10 @@ func (p *Provider) NodeGroupGetOptions(context.Context, *protos.NodeGroupAutosca
 	return nil, status.Error(codes.Unimplemented, "per node group options are not supported")
 }
 
+// GPULabel is asked for on every loop; answering Unimplemented makes cluster-autoscaler log an error each
+// time. No node group has GPUs, so a label no node carries is the honest answer.
 func (p *Provider) GPULabel(context.Context, *protos.GPULabelRequest) (*protos.GPULabelResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "GPU node groups are not supported")
+	return &protos.GPULabelResponse{Label: "rke-autoscaler.io/gpu"}, nil
 }
 
 func (p *Provider) GetAvailableGPUTypes(context.Context, *protos.GetAvailableGPUTypesRequest) (*protos.GetAvailableGPUTypesResponse, error) {

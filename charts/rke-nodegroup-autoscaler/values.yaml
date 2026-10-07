@@ -123,6 +123,8 @@ clusterAutoscaler:
   grpcTimeout: 60s
   extraArgs:
     v: 4
+    # create nodes up to each group's minSize even without pending pods (off upstream by default)
+    enforce-node-group-min-size: true
     expander: least-waste
     scale-down-enabled: true
     scale-down-delay-after-add: 10m
