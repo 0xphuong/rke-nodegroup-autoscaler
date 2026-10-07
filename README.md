@@ -44,11 +44,24 @@ Node mới được dựng **y hệt một worker RKE có sẵn**: provider lấ
 
   VM dùng token để lấy join script qua TLS và kiểm tra server bằng CA nhúng trong `user_data`. Mọi lần bị từ
   chối đều trả cùng một mã 403.
-- **Giới hạn còn lại:** cert `kube-node` và `kube-proxy` của RKE1 **dùng chung cho mọi node**. Ai lấy được cert từ
-  một node là có quyền của một node, gồm sửa label và taint của mọi node, vì RKE1 không bật NodeRestriction
-  theo từng node. Giải pháp này **cố ý không sửa RKE hay cluster hiện tại** (không đổi `cluster.yml`, không
-  `rke up`), nên chấp nhận giới hạn này. Muốn bỏ nó thì phải bật TLS bootstrapping qua `extra_args` và chạy
-  `rke up`, tức là thay đổi cluster, nằm ngoài phạm vi repo này.
+- **Giới hạn còn lại:** cert `kube-node` và `kube-proxy` của RKE1 **dùng chung cho mọi node**.
+  - Cert `kube-node` có CN `system:node`, không kèm tên node. Vì vậy Node authorizer và NodeRestriction không áp
+    dụng, mà quyền lấy từ RBAC: RKE gắn ClusterRole `system:node` cho group `system:nodes` (`templates/authz.go`).
+  - Đã kiểm chứng trên một cluster RKE 1.32 bằng `kubectl auth can-i --as=system:node --as-group=system:nodes`:
+    cert này **get/list/watch Secret và ConfigMap ở mọi namespace**, tạo và xoá pod, patch node.
+  - Tức là **giữ được `kube-node-key.pem` gần như có quyền admin.**
+  - Mọi worker RKE hiện có đều đã giữ key này trên đĩa. Giải pháp này thêm ba nơi chứa key:
+    - Secret `nodeCerts.existingSecret`;
+    - join script truyền qua TLS;
+    - đĩa của các VM trong node group.
+  - Giải pháp **cố ý không sửa RKE hay cluster hiện tại** (không đổi `cluster.yml`, không `rke up`), nên chấp
+    nhận giới hạn này. Muốn bỏ nó phải bật TLS bootstrapping và gỡ binding `system:node`, tức là thay đổi
+    cluster, nằm ngoài phạm vi repo này.
+  - Cách giảm thiểu mà không động vào RKE:
+    - cài chart vào namespace riêng, chỉ admin đọc được Secret;
+    - security group chỉ cho subnet của node group gọi NodePort bootstrap;
+    - giữ `tokenTTL` ngắn;
+    - không tạo image VM từ snapshot một node đã join, vì snapshot sẽ mang theo cert.
 
 ## Cài đặt
 
