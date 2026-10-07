@@ -119,7 +119,16 @@ của provider chạy cuối. Chart giữ các file này trong Secret (không d�
 `user_data` của VM, nơi console cloud và metadata API đều đọc được, nên **đừng để mật khẩu trong đó**.
 
 **Sau mỗi lần `rke up` làm thay đổi cluster** (upgrade k8s, đổi tham số kubelet, đổi control plane): lấy lại
-template worker và chạy `helm upgrade`. RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
+template worker và chạy `helm upgrade`. Script `scripts/update-worker-template.sh` làm việc này:
+
+```bash
+# chỉ kiểm tra: exit 1 nếu values đã lỗi thời so với worker thật
+scripts/update-worker-template.sh --worker <user>@<worker RKE> --values helm_vars/values.yaml --context <ctx> --check
+# cập nhật: in thay đổi, hỏi xác nhận, chỉ thay block workerTemplate.json (giữ comment và các key khác)
+scripts/update-worker-template.sh --worker <user>@<worker RKE> --values helm_vars/values.yaml --context <ctx>
+```
+
+Script chỉ lưu các trường provider dùng, nên khi container restart thì không bị báo là thay đổi. RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
 cũng từ chối template có `generate_serving_certificate`, vì khi đó mỗi node cần cert riêng.
 
 ## Kiểm tra luồng autoscaling
