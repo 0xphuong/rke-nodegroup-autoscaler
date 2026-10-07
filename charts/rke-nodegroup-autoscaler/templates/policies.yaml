@@ -1,0 +1,62 @@
+{{- $ns := .Release.Namespace -}}
+{{- if .Values.nodeDeletionPolicy.enabled }}
+# RBAC cannot restrict `delete nodes` by label. This policy does: the provider and cluster-autoscaler may only
+# delete Node objects that carry the node group label, so a bug or a stolen token cannot remove a control plane
+# node or an RKE-managed worker.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "ngas.fullname" . }}-node-deletion
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["nodes"]
+  matchConditions:
+    - name: autoscaler-service-accounts
+      expression: >-
+        request.userInfo.username in [
+          'system:serviceaccount:{{ $ns }}:{{ include "ngas.provider" . }}',
+          'system:serviceaccount:{{ $ns }}:{{ include "ngas.autoscaler" . }}'
+        ]
+  validations:
+    - expression: >-
+        has(oldObject.metadata.labels) && '{{ include "ngas.groupLabel" . }}' in oldObject.metadata.labels
+      message: "the node autoscaler may only delete nodes of its node groups ({{ include "ngas.groupLabel" . }} label)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "ngas.fullname" . }}-node-deletion
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "ngas.fullname" . }}-node-deletion
+  validationActions: [Deny]
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# gRPC only from cluster-autoscaler; the bootstrap port is open (token protected) because new VMs reach it
+# through the NodePort from outside the pod network.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ngas.provider" . }}
+  namespace: {{ $ns }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "ngas.providerSelector" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{- include "ngas.autoscalerSelector" . | nindent 14 }}
+      ports:
+        - {port: 8086, protocol: TCP}
+    - ports:
+        - {port: 8443, protocol: TCP}
+{{- end }}

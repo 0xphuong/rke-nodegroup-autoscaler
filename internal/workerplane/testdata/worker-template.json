@@ -1,0 +1,273 @@
+[
+ {
+  "Name": "/service-sidekick",
+  "Config": {
+   "Image": "rancher/rke-tools:v0.1.114",
+   "Entrypoint": [
+    "/bin/bash"
+   ],
+   "Cmd": null,
+   "Env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "NGINX_VERSION=1.27.1",
+    "PKG_RELEASE=1",
+    "DYNPKG_RELEASE=2",
+    "NJS_VERSION=0.8.5",
+    "NJS_RELEASE=1",
+    "DOCKER_VERSION=27.1.1",
+    "ETCD_VERSION=v3.5.16",
+    "CRIDOCKERD_VERSION=0.3.16",
+    "RANCHER_CONFD_VERSION=v0.16.7",
+    "KUBECTL_VERSION=v1.28.13",
+    "DOCKER_URL_amd64=https://download.docker.com/linux/static/stable/x86_64/docker-27.1.1.tgz",
+    "DOCKER_URL_arm64=https://download.docker.com/linux/static/stable/aarch64/docker-27.1.1.tgz",
+    "DOCKER_URL=DOCKER_URL_amd64",
+    "CRIDOCKERD_URL=https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.16/cri-dockerd-0.3.16.amd64.tgz",
+    "ETCD_URL=https://github.com/etcd-io/etcd/releases/download/v3.5.16/etcd-v3.5.16-linux-amd64.tar.gz"
+   ],
+   "Labels": {
+    "io.rancher.rke.container.name": "service-sidekick",
+    "maintainer": "Rancher Labs <support@rancher.com>",
+    "org.opencontainers.image.created": "2025-07-09T09:03:48.075Z",
+    "org.opencontainers.image.description": "Tools container for supporting functions in RKE",
+    "org.opencontainers.image.licenses": "Apache-2.0",
+    "org.opencontainers.image.revision": "82cdea8f0c1a0cd6b1a8da0ca44a8c80bc25214f",
+    "org.opencontainers.image.source": "https://github.com/rancher/rke-tools",
+    "org.opencontainers.image.title": "rke-tools",
+    "org.opencontainers.image.url": "https://github.com/rancher/rke-tools",
+    "org.opencontainers.image.version": "v0.1.114"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "none",
+   "PidMode": "",
+   "Privileged": false,
+   "Binds": [],
+   "VolumesFrom": null,
+   "SecurityOpt": null,
+   "RestartPolicy": {
+    "Name": "no"
+   },
+   "LogConfig": {
+    "Type": "json-file",
+    "Config": {
+     "max-file": "3",
+     "max-size": "512m"
+    }
+   }
+  }
+ },
+ {
+  "Name": "/nginx-proxy",
+  "Config": {
+   "Image": "rancher/rke-tools:v0.1.114",
+   "Entrypoint": [
+    "nginx-proxy"
+   ],
+   "Cmd": [
+    "CP_HOSTS=10.0.0.11,10.0.0.12,10.0.0.13"
+   ],
+   "Env": [
+    "CP_HOSTS=10.0.0.11,10.0.0.12,10.0.0.13",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "NGINX_VERSION=1.27.1",
+    "PKG_RELEASE=1",
+    "DYNPKG_RELEASE=2",
+    "NJS_VERSION=0.8.5",
+    "NJS_RELEASE=1",
+    "DOCKER_VERSION=27.1.1",
+    "ETCD_VERSION=v3.5.16",
+    "CRIDOCKERD_VERSION=0.3.16",
+    "RANCHER_CONFD_VERSION=v0.16.7",
+    "KUBECTL_VERSION=v1.28.13",
+    "DOCKER_URL_amd64=https://download.docker.com/linux/static/stable/x86_64/docker-27.1.1.tgz",
+    "DOCKER_URL_arm64=https://download.docker.com/linux/static/stable/aarch64/docker-27.1.1.tgz",
+    "DOCKER_URL=DOCKER_URL_amd64",
+    "CRIDOCKERD_URL=https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.16/cri-dockerd-0.3.16.amd64.tgz",
+    "ETCD_URL=https://github.com/etcd-io/etcd/releases/download/v3.5.16/etcd-v3.5.16-linux-amd64.tar.gz"
+   ],
+   "Labels": {
+    "io.rancher.rke.container.name": "nginx-proxy",
+    "maintainer": "Rancher Labs <support@rancher.com>",
+    "org.opencontainers.image.created": "2025-07-09T09:03:48.075Z",
+    "org.opencontainers.image.description": "Tools container for supporting functions in RKE",
+    "org.opencontainers.image.licenses": "Apache-2.0",
+    "org.opencontainers.image.revision": "82cdea8f0c1a0cd6b1a8da0ca44a8c80bc25214f",
+    "org.opencontainers.image.source": "https://github.com/rancher/rke-tools",
+    "org.opencontainers.image.title": "rke-tools",
+    "org.opencontainers.image.url": "https://github.com/rancher/rke-tools",
+    "org.opencontainers.image.version": "v0.1.114"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "host",
+   "PidMode": "",
+   "Privileged": false,
+   "Binds": [],
+   "VolumesFrom": [],
+   "SecurityOpt": null,
+   "RestartPolicy": {
+    "Name": "always"
+   },
+   "LogConfig": {
+    "Type": "json-file",
+    "Config": {
+     "max-file": "3",
+     "max-size": "512m"
+    }
+   }
+  }
+ },
+ {
+  "Name": "/kubelet",
+  "Config": {
+   "Image": "rancher/hyperkube:v1.32.6-rancher1",
+   "Entrypoint": [
+    "/opt/rke-tools/entrypoint.sh",
+    "kubelet",
+    "--pod-infra-container-image=rancher/mirrored-pause:3.7",
+    "--root-dir=/var/lib/kubelet",
+    "--volume-plugin-dir=/var/lib/kubelet/volumeplugins",
+    "--authorization-mode=Webhook",
+    "--cgroups-per-qos=True",
+    "--event-qps=0",
+    "--resolv-conf=/etc/resolv.conf",
+    "--cluster-dns=10.43.0.10",
+    "--anonymous-auth=false",
+    "--make-iptables-util-chains=true",
+    "--tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
+    "--v=2",
+    "--cluster-domain=cluster.local",
+    "--fail-swap-on=false",
+    "--hostname-override=worker-0",
+    "--kubeconfig=/etc/kubernetes/ssl/kubecfg-kube-node.yaml",
+    "--address=0.0.0.0",
+    "--authentication-token-webhook=true",
+    "--streaming-connection-idle-timeout=30m",
+    "--cloud-provider=",
+    "--container-runtime-endpoint=unix:///var/run/cri-dockerd.sock",
+    "--read-only-port=0",
+    "--client-ca-file=/etc/kubernetes/ssl/kube-ca.pem"
+   ],
+   "Cmd": null,
+   "Env": [
+    "RKE_KUBELET_CRIDOCKERD=true",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   "Labels": {
+    "io.rancher.rke.container.name": "kubelet",
+    "org.opencontainers.image.created": "2025-07-10T07:05:27.381Z",
+    "org.opencontainers.image.description": "Rancher hyperkube images",
+    "org.opencontainers.image.licenses": "Apache-2.0",
+    "org.opencontainers.image.ref.name": "ubuntu",
+    "org.opencontainers.image.revision": "f10141dfbc1c5a3c508185944c17a8118ab7fc60",
+    "org.opencontainers.image.source": "https://github.com/rancher/hyperkube",
+    "org.opencontainers.image.title": "hyperkube",
+    "org.opencontainers.image.url": "https://github.com/rancher/hyperkube",
+    "org.opencontainers.image.version": "v1.32.6-rancher1"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "host",
+   "PidMode": "host",
+   "Privileged": true,
+   "Binds": [
+    "/var/lib/cri-dockerd:/var/lib/cri-dockerd",
+    "/etc/kubernetes:/etc/kubernetes",
+    "/etc/cni:/etc/cni:rw",
+    "/opt/cni:/opt/cni:rw",
+    "/var/lib/cni:/var/lib/cni",
+    "/var/lib/calico:/var/lib/calico",
+    "/etc/resolv.conf:/etc/resolv.conf",
+    "/sys:/sys:rprivate",
+    "/var/lib/docker:/var/lib/docker:rw,rslave",
+    "/var/lib/kubelet:/var/lib/kubelet:shared",
+    "/var/lib/rancher:/var/lib/rancher:shared",
+    "/var/run:/var/run:rw,rprivate",
+    "/run:/run:rprivate",
+    "/etc/ceph:/etc/ceph",
+    "/dev:/host/dev:rprivate",
+    "/var/log/containers:/var/log/containers",
+    "/var/log/pods:/var/log/pods",
+    "/usr:/host/usr:ro",
+    "/etc:/host/etc:ro",
+    "/data:/data:rshared",
+    "/csi:/csi:rshared"
+   ],
+   "VolumesFrom": [
+    "service-sidekick"
+   ],
+   "SecurityOpt": [
+    "label=disable"
+   ],
+   "RestartPolicy": {
+    "Name": "always"
+   },
+   "LogConfig": {
+    "Type": "json-file",
+    "Config": {
+     "max-file": "3",
+     "max-size": "512m"
+    }
+   }
+  }
+ },
+ {
+  "Name": "/kube-proxy",
+  "Config": {
+   "Image": "rancher/hyperkube:v1.32.6-rancher1",
+   "Entrypoint": [
+    "/opt/rke-tools/entrypoint.sh",
+    "kube-proxy",
+    "--cluster-cidr=10.42.0.0/16",
+    "--hostname-override=worker-0",
+    "--kubeconfig=/etc/kubernetes/ssl/kubecfg-kube-proxy.yaml",
+    "--healthz-bind-address=127.0.0.1",
+    "--v=2"
+   ],
+   "Cmd": null,
+   "Env": [
+    "RKE_KUBE_PROXY_BR_NETFILTER=true",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   "Labels": {
+    "io.rancher.rke.container.name": "kube-proxy",
+    "org.opencontainers.image.created": "2025-07-10T07:05:27.381Z",
+    "org.opencontainers.image.description": "Rancher hyperkube images",
+    "org.opencontainers.image.licenses": "Apache-2.0",
+    "org.opencontainers.image.ref.name": "ubuntu",
+    "org.opencontainers.image.revision": "f10141dfbc1c5a3c508185944c17a8118ab7fc60",
+    "org.opencontainers.image.source": "https://github.com/rancher/hyperkube",
+    "org.opencontainers.image.title": "hyperkube",
+    "org.opencontainers.image.url": "https://github.com/rancher/hyperkube",
+    "org.opencontainers.image.version": "v1.32.6-rancher1"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "host",
+   "PidMode": "host",
+   "Privileged": true,
+   "Binds": [
+    "/etc/kubernetes:/etc/kubernetes",
+    "/run:/run",
+    "/lib/modules:/lib/modules:ro"
+   ],
+   "VolumesFrom": [
+    "service-sidekick"
+   ],
+   "SecurityOpt": [
+    "label=disable"
+   ],
+   "RestartPolicy": {
+    "Name": "always"
+   },
+   "LogConfig": {
+    "Type": "json-file",
+    "Config": {
+     "max-file": "3",
+     "max-size": "512m"
+    }
+   }
+  }
+ }
+]

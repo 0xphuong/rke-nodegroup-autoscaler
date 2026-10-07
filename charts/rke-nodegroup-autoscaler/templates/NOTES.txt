@@ -1,0 +1,20 @@
+rke-nodegroup-autoscaler is installed in {{ .Release.Namespace }}.
+
+Node groups:
+{{- range .Values.nodeGroups }}
+  - {{ .name }}: {{ .minSize }}..{{ .maxSize }} nodes
+{{- end }}
+
+Check it:
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "ngas.provider" . }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "ngas.autoscaler" . }}
+  kubectl -n {{ .Release.Namespace }} get configmap cluster-autoscaler-status -o yaml
+  kubectl -n {{ .Release.Namespace }} get configmap {{ include "ngas.provider" . }}-state -o jsonpath='{.data.instances\.json}'
+  kubectl get nodes -l {{ include "ngas.groupLabel" . }}
+
+New VMs fetch their join script from https://<node IP>:{{ .Values.bootstrap.nodePort }}; the VM security group
+must allow that, and the bootstrap log on a VM is /var/log/rke-nodegroup-bootstrap.log.
+
+After every `rke up` that changes the cluster (Kubernetes version, kubelet args, control plane hosts) re-take
+the worker template and `helm upgrade --set-file workerTemplate.json=...`; RKE does not know about node group
+nodes and will not upgrade them.

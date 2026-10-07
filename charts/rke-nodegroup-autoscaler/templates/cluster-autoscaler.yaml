@@ -1,0 +1,172 @@
+{{- $name := include "ngas.autoscaler" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+---
+# Same rules as the upstream cluster-autoscaler chart (charts/cluster-autoscaler/templates/clusterrole.yaml at
+# cluster-autoscaler-1.32.7), without the PSP and Cluster API parts.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [events, endpoints]
+    verbs: [create, patch]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [update]
+  - apiGroups: [""]
+    resources: [endpoints]
+    resourceNames: [cluster-autoscaler]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [watch, list, create, delete, get, update]
+  - apiGroups: [""]
+    resources: [namespaces, pods, services, replicationcontrollers, persistentvolumeclaims, persistentvolumes]
+    verbs: [watch, list, get]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [watch, list, get]
+  - apiGroups: [batch, extensions]
+    resources: [jobs]
+    verbs: [get, list, patch, watch]
+  - apiGroups: [extensions]
+    resources: [replicasets, daemonsets]
+    verbs: [watch, list, get]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [watch, list]
+  - apiGroups: [apps]
+    resources: [daemonsets, replicasets, statefulsets]
+    verbs: [watch, list, get]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses, csinodes, csidrivers, csistoragecapacities]
+    verbs: [watch, list, get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [list, watch, get]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [create]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [cluster-autoscaler]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [cluster-autoscaler-status]
+    verbs: [delete, get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cluster-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "ngas.autoscalerSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "ngas.autoscalerSelector" . | nindent 8 }}
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      serviceAccountName: {{ $name }}
+      priorityClassName: {{ .Values.clusterAutoscaler.priorityClassName }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      affinity:
+        {{- include "ngas.affinity" . | nindent 8 }}
+        {{- with .Values.clusterAutoscaler.extraAffinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.clusterAutoscaler.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clusterAutoscaler.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cluster-autoscaler
+          image: "{{ .Values.clusterAutoscaler.image.repository }}:{{ .Values.clusterAutoscaler.image.tag }}"
+          imagePullPolicy: {{ .Values.clusterAutoscaler.image.pullPolicy }}
+          command:
+            - ./cluster-autoscaler
+            - --cloud-provider=externalgrpc
+            - --cloud-config=/etc/cluster-autoscaler/grpc/cloud-config
+            - --namespace={{ .Release.Namespace }}
+            - --max-node-provision-time={{ .Values.maxProvisionTime }}
+            {{- range $k, $v := .Values.clusterAutoscaler.extraArgs }}
+            - --{{ $k }}={{ $v }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 8085}
+          livenessProbe:
+            httpGet: {path: /health-check, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources: {{- toYaml .Values.clusterAutoscaler.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: grpc, mountPath: /etc/cluster-autoscaler/grpc, readOnly: true}
+      volumes:
+        - name: grpc
+          secret: {secretName: {{ $name }}-grpc, defaultMode: 0444}

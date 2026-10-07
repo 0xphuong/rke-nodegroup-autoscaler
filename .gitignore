@@ -1,0 +1,8 @@
+/bin/
+/dist/
+*.test
+*.out
+# never commit real cluster data
+values-*.local.yaml
+worker-template*.local.json
+node-certs/

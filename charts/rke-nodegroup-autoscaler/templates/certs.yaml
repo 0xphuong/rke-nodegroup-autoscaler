@@ -1,0 +1,73 @@
+{{- include "ngas.validate" . -}}
+{{- /*
+One private CA for this release, kept across upgrades (lookup). It signs:
+  - the provider's gRPC server certificate and cluster-autoscaler's client certificate (mTLS),
+  - the bootstrap server certificate new VMs verify (IP SANs = bootstrap.nodeIPs).
+Leaf certificates are re-issued on every upgrade from the same CA, so running pods keep working with the
+certificates they loaded.
+*/ -}}
+{{- $fn := include "ngas.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $caName := printf "%s-ca" $fn -}}
+{{- $existing := lookup "v1" "Secret" $ns $caName -}}
+{{- $ca := "" -}}
+{{- if and $existing $existing.data -}}
+{{- $ca = buildCustomCert (index $existing.data "tls.crt") (index $existing.data "tls.key") -}}
+{{- else -}}
+{{- $ca = genCA (printf "%s-ca" $fn) 3650 -}}
+{{- end -}}
+{{- $svc := include "ngas.provider" . -}}
+{{- $grpcDNS := list $svc (printf "%s.%s" $svc $ns) (printf "%s.%s.svc" $svc $ns) (printf "%s.%s.svc.cluster.local" $svc $ns) -}}
+{{- $grpcServer := genSignedCert $svc nil $grpcDNS 825 $ca -}}
+{{- $grpcClient := genSignedCert (include "ngas.autoscaler" .) nil nil 825 $ca -}}
+{{- $boot := genSignedCert (printf "%s-bootstrap" $fn) .Values.bootstrap.nodeIPs nil 825 $ca -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $caName }}
+  namespace: {{ $ns }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $ca.Cert | b64enc }}
+  tls.key: {{ $ca.Key | b64enc }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $svc }}-grpc-tls
+  namespace: {{ $ns }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+type: Opaque
+data:
+  tls.crt: {{ $grpcServer.Cert | b64enc }}
+  tls.key: {{ $grpcServer.Key | b64enc }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $svc }}-bootstrap-tls
+  namespace: {{ $ns }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+type: Opaque
+data:
+  tls.crt: {{ $boot.Cert | b64enc }}
+  tls.key: {{ $boot.Key | b64enc }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "ngas.autoscaler" . }}-grpc
+  namespace: {{ $ns }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+type: Opaque
+data:
+  tls.crt: {{ $grpcClient.Cert | b64enc }}
+  tls.key: {{ $grpcClient.Key | b64enc }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+  # externalgrpc cloud provider configuration (cluster-autoscaler --cloud-config)
+  cloud-config: {{ printf "address: %s.%s.svc:8086\nkey: /etc/cluster-autoscaler/grpc/tls.key\ncert: /etc/cluster-autoscaler/grpc/tls.crt\ncacert: /etc/cluster-autoscaler/grpc/ca.crt\ngrpc_timeout: %s\n" $svc $ns .Values.clusterAutoscaler.grpcTimeout | b64enc }}

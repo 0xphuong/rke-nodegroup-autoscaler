@@ -1,0 +1,28 @@
+# Fake values for `helm lint` / `helm template` in CI. Not a real cluster.
+clusterName: dev
+vngcloud:
+  vserverEndpoint: https://hcm-3.api.vngcloud.vn/vserver/vserver-gateway
+  projectId: pro-00000000-0000-0000-0000-000000000000
+  credentials:
+    existingSecret: vngcloud-credentials
+nodeCerts:
+  existingSecret: rke-node-certs
+workerTemplate:
+  json: "[]"
+bootstrap:
+  nodeIPs: [10.0.0.11, 10.0.0.12, 10.0.0.13]
+nodeGroups:
+  - name: app
+    minSize: 0
+    maxSize: 5
+    labels: {workload: app}
+    taints: ["dedicated=app:NoSchedule"]
+    resources: {cpu: "4", memory: 8Gi, pods: "110", ephemeralStorage: 50Gi}
+    vngcloud:
+      imageId: img-00000000
+      flavorId: flav-00000000
+      rootDiskTypeId: vtype-00000000
+      rootDiskSize: 50
+      networkId: net-00000000
+      subnetId: sub-00000000
+      securityGroups: [secg-00000000]

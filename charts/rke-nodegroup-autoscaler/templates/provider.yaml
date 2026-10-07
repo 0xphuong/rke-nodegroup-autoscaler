@@ -1,0 +1,185 @@
+{{- $name := include "ngas.provider" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+---
+# nodes: map Node <-> VM, wait for registration, delete the Node object after its VM is gone.
+# Deletion is further limited to node group nodes by the ValidatingAdmissionPolicy (node-deletion-policy.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+# the instance records live in one ConfigMap of the release namespace; no access to Secrets at all
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $name }}-state]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: provider
+spec:
+  # one writer of the instance records
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "ngas.providerSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "ngas.providerSelector" . | nindent 8 }}
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        checksum/config: {{ include (print $.Template.BasePath "/provider-config.yaml") . | sha256sum }}
+        checksum/bootstrap-ips: {{ toJson .Values.bootstrap.nodeIPs | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      {{- with .Values.provider.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      priorityClassName: {{ .Values.provider.priorityClassName }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      affinity:
+        {{- include "ngas.affinity" . | nindent 8 }}
+        {{- with .Values.provider.extraAffinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.provider.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.provider.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: provider
+          image: "{{ .Values.provider.image.repository }}:{{ .Values.provider.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.provider.image.pullPolicy }}
+          args:
+            - --config=/etc/nodegroup-provider/config/config.yaml
+            - --worker-template=/etc/nodegroup-provider/worker-template/worker-template.json
+            - --node-certs=/etc/nodegroup-provider/node-certs
+            - --grpc-tls=/etc/nodegroup-provider/grpc-tls
+            - --bootstrap-tls=/etc/nodegroup-provider/bootstrap-tls
+            - --state-configmap={{ $name }}-state
+            - --reconcile-interval={{ .Values.provider.reconcileInterval }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: VNGCLOUD_CLIENT_ID
+              valueFrom: {secretKeyRef: {name: {{ .Values.vngcloud.credentials.existingSecret }}, key: clientId}}
+            - name: VNGCLOUD_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: {{ .Values.vngcloud.credentials.existingSecret }}, key: clientSecret}}
+          ports:
+            - {name: grpc, containerPort: 8086}
+            - {name: bootstrap, containerPort: 8443}
+          readinessProbe:
+            httpGet: {path: /healthz, port: bootstrap, scheme: HTTPS}
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: grpc}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources: {{- toYaml .Values.provider.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/nodegroup-provider/config, readOnly: true}
+            - {name: worker-template, mountPath: /etc/nodegroup-provider/worker-template, readOnly: true}
+            - {name: node-certs, mountPath: /etc/nodegroup-provider/node-certs, readOnly: true}
+            - {name: grpc-tls, mountPath: /etc/nodegroup-provider/grpc-tls, readOnly: true}
+            - {name: bootstrap-tls, mountPath: /etc/nodegroup-provider/bootstrap-tls, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ $name }}-config}
+        - name: worker-template
+          configMap: {name: {{ include "ngas.workerTemplateConfigMap" . }}}
+        - name: node-certs
+          secret: {secretName: {{ .Values.nodeCerts.existingSecret }}, defaultMode: 0400}
+        - name: grpc-tls
+          secret: {secretName: {{ $name }}-grpc-tls, defaultMode: 0400}
+        - name: bootstrap-tls
+          secret: {secretName: {{ $name }}-bootstrap-tls, defaultMode: 0400}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{- include "ngas.providerSelector" . | nindent 4 }}
+  ports:
+    - {name: grpc, port: 8086, targetPort: grpc}
+---
+# new VMs are not in the cluster yet: they reach the bootstrap server through this NodePort on existing nodes
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "ngas.providerSelector" . | nindent 4 }}
+  ports:
+    - {name: bootstrap, port: 8443, targetPort: bootstrap, nodePort: {{ .Values.bootstrap.nodePort }}}

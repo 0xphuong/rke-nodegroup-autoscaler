@@ -1,0 +1,126 @@
+# Name used in VM tags and as the default VM/node name prefix. Lowercase DNS label.
+clusterName: ""
+
+# --- Node groups -------------------------------------------------------------------------------------------
+# Each group is a set of identical VMs cluster-autoscaler resizes between minSize and maxSize.
+nodeGroups: []
+#  - name: app
+#    minSize: 0
+#    maxSize: 5
+#    # namePrefix: dev-app          # default <clusterName>-<name>; a random suffix is appended
+#    labels:                        # kubernetes.io/ and k8s.io/ prefixes are refused by kubelet
+#      workload: app
+#    taints: []                     # e.g. ["dedicated=app:NoSchedule"]
+#    # what ONE VM gives a node; used to simulate scale from zero. Keep it equal to the flavor (minus reserved).
+#    resources:
+#      cpu: "4"
+#      memory: 8Gi
+#      pods: "110"
+#      ephemeralStorage: 50Gi
+#    vngcloud:
+#      imageId: img-...             # Ubuntu 20.04 with the docker version of the cluster (pre-pulled images = fast)
+#      flavorId: flav-...
+#      rootDiskTypeId: vtype-...
+#      rootDiskSize: 50
+#      networkId: net-...
+#      subnetId: sub-...
+#      securityGroups: [secg-...]   # must allow the RKE worker ports and reach the control plane on 6443
+#      sshKeyId: ""                 # optional, for debugging
+#      serverGroupId: ""            # optional, anti-affinity
+#      zoneId: ""
+#      tags: {}
+
+# A VM that is not a Ready node this long after creation is reported failed; cluster-autoscaler deletes it.
+# Also passed to cluster-autoscaler as --max-node-provision-time.
+maxProvisionTime: 20m
+
+# --- Cloud --------------------------------------------------------------------------------------------------
+vngcloud:
+  iamEndpoint: https://iamapis.vngcloud.vn/accounts-api
+  vserverEndpoint: ""        # e.g. https://hcm-3.api.vngcloud.vn/vserver/vserver-gateway
+  projectId: ""
+  zoneId: ""
+  credentials:
+    # Secret with keys clientId and clientSecret of a VNG Cloud service account that can only create and
+    # delete servers in this project. Create it out of band; do not put credentials in values files.
+    existingSecret: ""
+
+# --- What a new node runs -----------------------------------------------------------------------------------
+# docker inspect of an existing, healthy RKE worker (no secrets in it). Take it once per cluster and again after
+# every `rke up` that changes the cluster:
+#   ssh <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet kube-proxy' > worker-template.json
+#   helm upgrade ... --set-file workerTemplate.json=worker-template.json
+workerTemplate:
+  json: ""
+  existingConfigMap: ""      # alternatively: ConfigMap with key worker-template.json
+
+# RKE node certificates, shared by all workers of an RKE1 cluster. Create the Secret from an existing worker:
+#   ssh <worker> 'sudo tar czf - -C /etc/kubernetes/ssl kube-ca.pem kube-node.pem kube-node-key.pem \
+#     kube-proxy.pem kube-proxy-key.pem kubecfg-kube-node.yaml kubecfg-kube-proxy.yaml' | tar xzf - -C node-certs/
+#   kubectl -n <namespace> create secret generic <name> --from-file=node-certs/
+nodeCerts:
+  existingSecret: ""
+
+# --- Bootstrap: how a new VM fetches its join script ----------------------------------------------------------
+bootstrap:
+  # Addresses of existing nodes the new VM can reach (any node runs kube-proxy, so the NodePort answers on all).
+  # Used as bootstrap endpoints and as IP SANs of the bootstrap server certificate.
+  nodeIPs: []
+  nodePort: 31443
+  tokenTTL: 15m
+  # Shell run on the VM before the join, e.g. when the image has no docker yet:
+  #   preJoinScript: |
+  #     curl -fsSL https://releases.rancher.com/install-docker/28.1.sh | sh
+  preJoinScript: ""
+
+# --- nodegroup-provider -------------------------------------------------------------------------------------
+provider:
+  image:
+    repository: ghcr.io/0xphuong/rke-nodegroup-autoscaler
+    tag: ""                  # default: chart appVersion
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  reconcileInterval: 30s
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 256Mi}
+  priorityClassName: system-cluster-critical
+  nodeSelector: {}
+  tolerations: []
+  # Pods of this chart must never run on a node the autoscaler may remove; see _helpers.tpl "ngas.affinity".
+  extraAffinity: {}
+
+# --- cluster-autoscaler -------------------------------------------------------------------------------------
+clusterAutoscaler:
+  image:
+    repository: registry.k8s.io/autoscaling/cluster-autoscaler
+    tag: v1.32.7             # keep the minor equal to the cluster's Kubernetes minor
+    pullPolicy: IfNotPresent
+  # gRPC calls to the provider; IncreaseSize creates the VMs synchronously, so allow for the cloud API.
+  grpcTimeout: 60s
+  extraArgs:
+    v: 4
+    expander: least-waste
+    scale-down-enabled: true
+    scale-down-delay-after-add: 10m
+    scale-down-unneeded-time: 10m
+    scale-down-utilization-threshold: 0.5
+    skip-nodes-with-local-storage: true
+    skip-nodes-with-system-pods: true
+    max-graceful-termination-sec: 600
+    balance-similar-node-groups: false
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  priorityClassName: system-cluster-critical
+  nodeSelector: {}
+  tolerations: []
+  extraAffinity: {}
+
+# Only let the autoscaler's service accounts delete Node objects that carry the node group label
+# (ValidatingAdmissionPolicy, Kubernetes >= 1.30).
+nodeDeletionPolicy:
+  enabled: true
+
+networkPolicy:
+  enabled: true

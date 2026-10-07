@@ -1,0 +1,38 @@
+{{- $fn := include "ngas.fullname" . -}}
+{{- $endpoints := list -}}
+{{- range .Values.bootstrap.nodeIPs -}}
+{{- $endpoints = append $endpoints (printf "https://%s:%v" . $.Values.bootstrap.nodePort) -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ngas.provider" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    clusterName: {{ .Values.clusterName }}
+    maxProvisionTime: {{ .Values.maxProvisionTime }}
+    cloud:
+      provider: vngcloud
+      vngcloud:
+        iamEndpoint: {{ .Values.vngcloud.iamEndpoint | quote }}
+        vserverEndpoint: {{ .Values.vngcloud.vserverEndpoint | quote }}
+        projectId: {{ .Values.vngcloud.projectId | quote }}
+        zoneId: {{ .Values.vngcloud.zoneId | quote }}
+    bootstrap:
+      endpoints: {{- toYaml $endpoints | nindent 8 }}
+      tokenTTL: {{ .Values.bootstrap.tokenTTL }}
+      preJoinScript: {{ .Values.bootstrap.preJoinScript | quote }}
+    nodeGroups: {{- toYaml .Values.nodeGroups | nindent 6 }}
+{{- if not .Values.workerTemplate.existingConfigMap }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ngas.workerTemplateConfigMap" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ngas.labels" . | nindent 4 }}
+data:
+  worker-template.json: {{ .Values.workerTemplate.json | quote }}
+{{- end }}
