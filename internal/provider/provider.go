@@ -196,14 +196,15 @@ func (p *Provider) NodeGroupDeleteNodes(ctx context.Context, req *protos.NodeGro
 		}
 		recs = append(recs, rec)
 	}
-	// only instances counted in the target size lower it; Failed ones are already outside it
+	// only instances counted in the target size lower it; Failed ones are already outside it, so deleting
+	// only those never goes below minSize (and must not be refused while the group sits at minSize)
 	counted := 0
 	for _, r := range recs {
 		if r.Phase == state.Creating || r.Phase == state.Running {
 			counted++
 		}
 	}
-	if p.targetSize(g.Name)-counted < g.MinSize {
+	if counted > 0 && p.targetSize(g.Name)-counted < g.MinSize {
 		return nil, status.Errorf(codes.FailedPrecondition, "deleting %d nodes would take %s below minSize %d", counted, g.Name, g.MinSize)
 	}
 	for _, r := range recs {
@@ -235,6 +236,10 @@ func (p *Provider) NodeGroupDecreaseTargetSize(ctx context.Context, req *protos.
 	}
 	if delta > len(pending) {
 		return nil, status.Errorf(codes.FailedPrecondition, "only %d instances of %s are still being created, cannot cancel %d", len(pending), g.Name, delta)
+	}
+	// below minSize, min-size enforcement would create them again on the next loop
+	if size := p.targetSize(g.Name); size-delta < g.MinSize {
+		return nil, status.Errorf(codes.FailedPrecondition, "cancelling %d of %s would take it from %d below minSize %d", delta, g.Name, size, g.MinSize)
 	}
 	// newest first: the oldest are the most likely to be about to register
 	for i := 0; i < delta; i++ {
@@ -344,9 +349,9 @@ func (p *Provider) NodeGroupGetOptions(context.Context, *protos.NodeGroupAutosca
 }
 
 // GPULabel is asked for on every loop; answering Unimplemented makes cluster-autoscaler log an error each
-// time. No node group has GPUs, so a label no node carries is the honest answer.
+// time. No node group has GPUs: an empty label means "none" without reserving a label key.
 func (p *Provider) GPULabel(context.Context, *protos.GPULabelRequest) (*protos.GPULabelResponse, error) {
-	return &protos.GPULabelResponse{Label: "rke-autoscaler.io/gpu"}, nil
+	return &protos.GPULabelResponse{}, nil
 }
 
 func (p *Provider) GetAvailableGPUTypes(context.Context, *protos.GetAvailableGPUTypesRequest) (*protos.GetAvailableGPUTypesResponse, error) {

@@ -20,6 +20,10 @@ const orphanRecordAge = 5 * time.Minute
 // deleteRetryAfter: re-issue the cloud delete if the VM is still there this long after the first attempt.
 const deleteRetryAfter = 3 * time.Minute
 
+// nodeLostAfter: a Running instance whose Node object has been gone this long while its VM still exists is
+// failed, so cluster-autoscaler replaces it instead of counting a node that does not exist.
+const nodeLostAfter = 5 * time.Minute
+
 // Run reconciles every interval until ctx is done.
 func (p *Provider) Run(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
@@ -102,13 +106,30 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 		return nil
 
 	case state.Running:
-		if _, ok := nodes[r.ProviderID]; ok {
+		if _, ok := nodes[r.ProviderID]; ok || p.nodeStillThere(ctx, r) {
+			if r.NodeMissingSince != nil {
+				p.Log.Info("node is back", "node", r.Name)
+				return p.Store.Update(ctx, r.Name, func(x *state.Record) bool { x.NodeMissingSince = nil; return true })
+			}
 			return nil
 		}
 		// Node object gone: was the VM deleted behind our back?
-		if _, err := p.Driver.Get(ctx, r.ID); errors.Is(err, cloud.ErrNotFound) {
+		_, err := p.Driver.Get(ctx, r.ID)
+		if errors.Is(err, cloud.ErrNotFound) {
 			p.Log.Warn("VM and node gone outside the autoscaler, dropping record", "node", r.Name)
 			return p.Store.Remove(ctx, r.Name)
+		}
+		if err != nil {
+			return err
+		}
+		// VM still there but no Node: give kubelet time to re-register, then fail the instance so
+		// cluster-autoscaler deletes it and creates a working one (it must not count towards minSize)
+		if r.NodeMissingSince == nil {
+			p.Log.Warn("node object is gone while its VM exists", "node", r.Name)
+			return p.Store.Update(ctx, r.Name, func(x *state.Record) bool { x.NodeMissingSince = &now; return true })
+		}
+		if now.Sub(*r.NodeMissingSince) > nodeLostAfter {
+			return p.fail(ctx, r, "node object gone for more than "+nodeLostAfter.String()+" while the VM exists")
 		}
 		return nil
 
@@ -142,6 +163,12 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 		return nil
 	}
 	return nil
+}
+
+// nodeStillThere covers a Node that exists but lost the group label (edited by hand): it is not lost.
+func (p *Provider) nodeStillThere(ctx context.Context, r state.Record) bool {
+	n, err := p.Kube.CoreV1().Nodes().Get(ctx, r.Name, metav1.GetOptions{})
+	return err == nil && n.Spec.ProviderID == r.ProviderID
 }
 
 func (p *Provider) fail(ctx context.Context, r state.Record, msg string) error {

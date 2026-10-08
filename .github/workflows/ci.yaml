@@ -34,6 +34,9 @@ jobs:
       - uses: actions/checkout@v4
       - id: meta
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      # one version everywhere: tag vX.Y.Z == Chart.yaml version == appVersion == image tag
+      - name: check versions
+        run: make check-version TAG="${{ github.ref_name }}"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       # repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (access token with write scope)
@@ -54,5 +57,5 @@ jobs:
       - name: push chart
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login registry-1.docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          helm package charts/rke-nodegroup-autoscaler --version "${{ steps.meta.outputs.version }}" --app-version "${{ steps.meta.outputs.version }}"
+          helm package charts/rke-nodegroup-autoscaler
           helm push "rke-nodegroup-autoscaler-${{ steps.meta.outputs.version }}.tgz" "oci://registry-1.docker.io/${{ secrets.DOCKERHUB_USERNAME }}"

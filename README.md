@@ -171,6 +171,10 @@ make image          # docker buildx, linux/amd64
 
 Image: `docker.io/binhphuong/rke-nodegroup-autoscaler` (public, linux/amd64 + linux/arm64).
 
+**Một số version cho tất cả:** tag `vX.Y.Z` = `version` = `appVersion` trong `Chart.yaml` = tag image `X.Y.Z`.
+Muốn phát hành, nâng cả `version` và `appVersion` trong `Chart.yaml`, commit, rồi tạo tag. `make check-version`
+(CI cũng chạy) sẽ chặn nếu bị lệch.
+
 CI (`.github/workflows/ci.yaml`): mỗi lần push sẽ chạy test và lint chart. Tag `vX.Y.Z` thì build image cho
 amd64 và arm64, đẩy lên `docker.io/binhphuong/rke-nodegroup-autoscaler:X.Y.Z`, và đẩy chart lên
 `oci://registry-1.docker.io/<user>`. Cần hai secret của repo: `DOCKERHUB_USERNAME` và `DOCKERHUB_TOKEN`.

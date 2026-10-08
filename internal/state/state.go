@@ -46,7 +46,9 @@ type Record struct {
 	TokenHash   string     `json:"tokenHash,omitempty"`
 	TokenExpiry time.Time  `json:"tokenExpiry,omitempty"`
 	DeletingAt  *time.Time `json:"deletingAt,omitempty"`
-	Message     string     `json:"message,omitempty"`
+	// NodeMissingSince: a Running instance's Node object has been absent since then (VM still there)
+	NodeMissingSince *time.Time `json:"nodeMissingSince,omitempty"`
+	Message          string     `json:"message,omitempty"`
 }
 
 type Store struct {

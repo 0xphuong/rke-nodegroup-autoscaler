@@ -2,8 +2,8 @@ apiVersion: v2
 name: rke-nodegroup-autoscaler
 description: Managed node groups and cluster-autoscaler for RKE1 clusters on VNG Cloud (externalgrpc provider)
 type: application
-version: 0.2.2
-appVersion: "0.2.2"
+version: 0.2.3
+appVersion: "0.2.3"
 kubeVersion: ">=1.30.0-0"
 keywords: [rke, cluster-autoscaler, node-group, vngcloud]
 sources:
