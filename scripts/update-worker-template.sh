@@ -5,7 +5,7 @@
 # extra_args/extra_binds, cluster DNS/CIDR, control plane hosts, private registries).
 #
 # Usage:
-#   scripts/update-worker-template.sh --worker stackops@10.0.0.20 [--values helm_vars/values.yaml]
+#   scripts/update-worker-template.sh --worker ubuntu@10.0.0.20 [--values helm_vars/values.yaml]
 #                                     [--context my-cluster] [--check] [--yes] [--ssh-opt "-p 2222"] [--no-sudo]
 #
 #   --worker   SSH target of a worker RKE manages (never a node of a node group); only read from

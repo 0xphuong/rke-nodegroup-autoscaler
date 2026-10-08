@@ -13,3 +13,4 @@ node-certs/
 # local helm/helmfile inputs may hold credentials
 /helm_vars/
 secrets*.yaml
+/helmfile.yaml
