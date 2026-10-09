@@ -5,7 +5,7 @@ CHART   := charts/rke-nodegroup-autoscaler
 CHART_VERSION := $(shell sed -n 's/^version: *//p' charts/rke-nodegroup-autoscaler/Chart.yaml)
 APP_VERSION   := $(shell sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/p' charts/rke-nodegroup-autoscaler/Chart.yaml)
 
-.PHONY: build test lint image chart-lint chart-template check-version
+.PHONY: build test lint image push chart-lint chart-template check-version
 
 build:
 	CGO_ENABLED=0 go build -trimpath -o bin/nodegroup-provider ./cmd/nodegroup-provider
@@ -18,6 +18,10 @@ lint:
 
 image:
 	docker buildx build --platform linux/amd64 --load --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
+
+# build multi-arch and push to Docker Hub (see scripts/release-image.sh --help); ARGS="--latest --chart ..."
+push:
+	scripts/release-image.sh $(ARGS)
 
 # tag vX.Y.Z, Chart.yaml version and appVersion must all be X.Y.Z.
 # TAG=vX.Y.Z or X.Y.Z (default: the latest v* tag of HEAD's history)

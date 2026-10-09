@@ -110,20 +110,10 @@ func (p *Provider) NodeGroupIncreaseSize(ctx context.Context, req *protos.NodeGr
 		return nil, status.Errorf(codes.InvalidArgument, "size %d + %d exceeds maxSize %d of %s", size, delta, g.MaxSize, g.Name)
 	}
 
-	// names are picked up front, unique within the batch and against existing records
-	names := make([]string, 0, delta)
-	taken := map[string]bool{}
-	for len(names) < delta {
-		name := g.NamePrefix + "-" + p.NameRand()
-		if _, exists := p.Store.Get(name); exists || taken[name] {
-			continue
-		}
-		taken[name] = true
-		names = append(names, name)
-	}
+	names := p.pickNames(g, delta)
 	var eg errgroup.Group
 	for _, name := range names {
-		eg.Go(func() error { return p.createOne(ctx, g, name) })
+		eg.Go(func() error { return p.createOne(ctx, g, name, "") })
 	}
 	if err := eg.Wait(); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "scale up %s: %v", g.Name, err)
@@ -131,7 +121,8 @@ func (p *Provider) NodeGroupIncreaseSize(ctx context.Context, req *protos.NodeGr
 	return &protos.NodeGroupIncreaseSizeResponse{}, nil
 }
 
-func (p *Provider) createOne(ctx context.Context, g config.NodeGroup, name string) error {
+// createOne creates one instance; replaces names the instance it stands in for during a repair ("" otherwise).
+func (p *Provider) createOne(ctx context.Context, g config.NodeGroup, name, replaces string) error {
 	token, hash, err := bootstrap.NewToken()
 	if err != nil {
 		return err
@@ -139,7 +130,7 @@ func (p *Provider) createOne(ctx context.Context, g config.NodeGroup, name strin
 	now := p.Now()
 	// recorded before the cloud call: if we crash in between, reconcile finds a record without ID and drops it
 	rec := state.Record{
-		Name: name, Group: g.Name, Phase: state.Creating, CreatedAt: now,
+		Name: name, Group: g.Name, Phase: state.Creating, CreatedAt: now, Replaces: replaces,
 		TokenHash: hash, TokenExpiry: now.Add(p.Config.Bootstrap.TokenTTL.Duration),
 	}
 	if err := p.Store.Put(ctx, rec); err != nil {
@@ -196,7 +187,7 @@ func (p *Provider) NodeGroupDeleteNodes(ctx context.Context, req *protos.NodeGro
 		}
 		recs = append(recs, rec)
 	}
-	// only instances counted in the target size lower it; Failed ones are already outside it, so deleting
+	// only instances counted in the target size lower it; Failed and Replacing ones are already outside it, so deleting
 	// only those never goes below minSize (and must not be refused while the group sits at minSize)
 	counted := 0
 	for _, r := range recs {
@@ -230,7 +221,8 @@ func (p *Provider) NodeGroupDecreaseTargetSize(ctx context.Context, req *protos.
 	defer p.mu.Unlock()
 	var pending []state.Record
 	for _, r := range p.Store.List(g.Name) {
-		if r.Phase == state.Creating {
+		// a repair's replacement is not a scale up: cancelling it would keep the broken node it replaces
+		if r.Phase == state.Creating && r.Replaces == "" {
 			pending = append(pending, r)
 		}
 	}
@@ -289,7 +281,8 @@ func (p *Provider) NodeGroupNodes(_ context.Context, req *protos.NodeGroupNodesR
 			st.InstanceState = protos.InstanceStatus_instanceCreating
 		case state.Running:
 			st.InstanceState = protos.InstanceStatus_instanceRunning
-		case state.Deleting:
+		case state.Deleting, state.Replacing:
+			// a Replacing instance is on its way out: cluster-autoscaler must neither count nor scale it down
 			st.InstanceState = protos.InstanceStatus_instanceDeleting
 		case state.Failed:
 			// a creating instance with an error makes cluster-autoscaler give up on it, delete it and back off
@@ -369,6 +362,22 @@ func (p *Provider) Cleanup(context.Context, *protos.CleanupRequest) (*protos.Cle
 }
 
 // ---- helpers -----------------------------------------------------------------------------------------------
+
+// pickNames returns n new instance names, unique within the batch and against existing records. Names are
+// picked up front so instances can be created in parallel.
+func (p *Provider) pickNames(g config.NodeGroup, n int) []string {
+	names := make([]string, 0, n)
+	taken := map[string]bool{}
+	for len(names) < n {
+		name := g.NamePrefix + "-" + p.NameRand()
+		if _, exists := p.Store.Get(name); exists || taken[name] {
+			continue
+		}
+		taken[name] = true
+		names = append(names, name)
+	}
+	return names
+}
 
 // recordFor resolves an instance ID as reported by NodeGroupNodes, including the placeholder of an instance
 // whose VM has no cloud ID yet (cluster-autoscaler deletes those when they time out).

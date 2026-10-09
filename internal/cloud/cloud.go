@@ -24,7 +24,9 @@ const (
 	PhaseCreating Phase = "Creating"
 	PhaseRunning  Phase = "Running"
 	PhaseDeleting Phase = "Deleting"
-	PhaseError    Phase = "Error"
+	// PhaseStopped: the VM exists but is powered off (stopped by hand, or by the cloud).
+	PhaseStopped Phase = "Stopped"
+	PhaseError   Phase = "Error"
 )
 
 type Instance struct {

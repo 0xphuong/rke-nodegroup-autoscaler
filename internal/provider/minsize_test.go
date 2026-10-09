@@ -56,19 +56,12 @@ func TestDecreaseTargetSizeRespectsMinSize(t *testing.T) {
 }
 
 // Bug 3: a Running instance whose Node object disappeared while the VM still exists must not count towards
-// the target size forever; after a grace period it is failed so cluster-autoscaler replaces it.
+// the target size forever; after a grace period it is replaced (the old VM is deleted at once, it serves
+// nothing without a Node).
 func TestRunningInstanceWithLostNodeIsReplaced(t *testing.T) {
 	e := newEnv(t)
 	e.p.Config.NodeGroups[0].MinSize = 1
-	if _, err := e.p.NodeGroupIncreaseSize(e.ctx, &protos.NodeGroupIncreaseSizeRequest{Id: "app", Delta: 1}); err != nil {
-		t.Fatal(err)
-	}
-	r := e.p.Store.List("app")[0]
-	node := e.register(t, r.Name, true)
-	e.p.ReconcileOnce(e.ctx)
-	if got, _ := e.p.Store.Get(r.Name); got.Phase != state.Running {
-		t.Fatalf("setup: phase %s", got.Phase)
-	}
+	r, node := e.runningInstance(t)
 
 	// the Node object goes away (kubelet gone, or deleted by hand); the VM stays
 	if err := e.kube.CoreV1().Nodes().Delete(e.ctx, node.Name, metav1.DeleteOptions{}); err != nil {
@@ -81,9 +74,30 @@ func TestRunningInstanceWithLostNodeIsReplaced(t *testing.T) {
 
 	e.now = e.now.Add(nodeLostAfter + time.Minute)
 	e.p.ReconcileOnce(e.ctx)
-	got, _ := e.p.Store.Get(r.Name)
-	if got.Phase != state.Failed {
-		t.Fatalf("after the grace period the instance must be Failed, got %s", got.Phase)
+	if got, ok := e.p.Store.Get(r.Name); ok && got.Phase != state.Deleting {
+		t.Fatalf("after the grace period the old instance must be deleted, got %s", got.Phase)
+	}
+	if len(e.cloud.deletes) != 1 || e.cloud.deletes[0] != r.ID {
+		t.Fatalf("the old VM must be deleted, cloud deletes = %v", e.cloud.deletes)
+	}
+	nr := e.replacementOf(t, r.Name)
+	if nr.Phase != state.Creating || e.targetSize(t) != 1 {
+		t.Fatalf("a replacement must be created and the size kept: phase %s target %d", nr.Phase, e.targetSize(t))
+	}
+}
+
+// With repair disabled, a lost node is failed and left to cluster-autoscaler (the v0.2.3 behaviour).
+func TestLostNodeWithRepairDisabledIsFailed(t *testing.T) {
+	e := newEnv(t)
+	off := false
+	e.p.Config.Repair.Enabled = &off
+	r, node := e.runningInstance(t)
+	_ = e.kube.CoreV1().Nodes().Delete(e.ctx, node.Name, metav1.DeleteOptions{})
+	e.p.ReconcileOnce(e.ctx)
+	e.now = e.now.Add(nodeLostAfter + time.Minute)
+	e.p.ReconcileOnce(e.ctx)
+	if got, _ := e.p.Store.Get(r.Name); got.Phase != state.Failed {
+		t.Fatalf("want Failed, got %s", got.Phase)
 	}
 	if e.targetSize(t) != 0 {
 		t.Fatalf("a lost node must not satisfy minSize, target size = %d", e.targetSize(t))

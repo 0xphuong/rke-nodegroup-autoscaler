@@ -114,7 +114,8 @@ func (d *Driver) Delete(_ context.Context, id string) error {
 }
 
 // toInstance maps a vServer to the provider's view. vServer status strings are not documented in the SDK;
-// only ACTIVE counts as running, anything mentioning ERROR as failed, DELET* as deleting.
+// only ACTIVE counts as running, anything mentioning ERROR as failed, DELET* as deleting, STOP*/SHUTOFF as
+// stopped.
 func toInstance(s *lsentity.Server) cloud.Instance {
 	in := cloud.Instance{ID: s.Uuid, Name: s.Name, RawStatus: s.Status}
 	st := strings.ToUpper(s.Status)
@@ -125,6 +126,8 @@ func toInstance(s *lsentity.Server) cloud.Instance {
 		in.Phase = cloud.PhaseError
 	case strings.HasPrefix(st, "DELET"):
 		in.Phase = cloud.PhaseDeleting
+	case strings.HasPrefix(st, "STOP"), st == "SHUTOFF":
+		in.Phase = cloud.PhaseStopped
 	default:
 		in.Phase = cloud.PhaseCreating
 	}

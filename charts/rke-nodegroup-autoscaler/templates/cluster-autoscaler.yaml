@@ -116,6 +116,7 @@ metadata:
     app.kubernetes.io/component: cluster-autoscaler
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels: {{- include "ngas.autoscalerSelector" . | nindent 6 }}
   template:
@@ -123,6 +124,10 @@ spec:
       labels: {{- include "ngas.autoscalerSelector" . | nindent 8 }}
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        {{- $t := include "ngas.tls" . | fromYaml }}
+        # cluster-autoscaler reads --cloud-config and its client certificate at start: restart when they change
+        # (e.g. clusterAutoscaler.grpcTimeout), not on every upgrade
+        checksum/grpc: {{ printf "%s%s%s" (include "ngas.cloudConfig" .) $t.grpcClient.id $t.grpcClient.notAfter | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       priorityClassName: {{ .Values.clusterAutoscaler.priorityClassName }}

@@ -26,6 +26,51 @@ type Config struct {
 	// MaxProvisionTime: an instance that has not registered as a Ready node by then is reported as failed,
 	// so cluster-autoscaler deletes it and backs off the group.
 	MaxProvisionTime metav1.Duration `json:"maxProvisionTime"`
+	// Repair replaces nodes of a group that stopped working; node groups can override single fields.
+	Repair Repair `json:"repair"`
+}
+
+// Repair: a Running instance whose node is NotReady (or gone) is replaced by a new VM. If its VM still runs,
+// the new node is created first and the old one deleted once the new one is Ready; if the VM is gone, stopped
+// or in error, both happen at once. See docs/node-repair.md.
+type Repair struct {
+	Enabled *bool `json:"enabled,omitempty"`
+	// NotReadyAfter: how long a node whose VM still runs must be NotReady before it is replaced.
+	NotReadyAfter metav1.Duration `json:"notReadyAfter,omitempty"`
+	// VMGoneAfter: how long a node whose VM is deleted, stopped or in error must be NotReady before it is
+	// replaced.
+	VMGoneAfter metav1.Duration `json:"vmGoneAfter,omitempty"`
+	// MaxUnhealthyPercent: no repair while more than this share of the group's nodes (or of all nodes of the
+	// cluster) is unhealthy; that looks like a network or control plane outage, which new VMs do not fix.
+	// One unhealthy node is always repairable.
+	MaxUnhealthyPercent int `json:"maxUnhealthyPercent,omitempty"`
+	// RetryAfter: after a replacement failed, the next attempt for that node waits this long.
+	RetryAfter metav1.Duration `json:"retryAfter,omitempty"`
+}
+
+func (r Repair) On() bool { return r.Enabled == nil || *r.Enabled }
+
+// merge returns r with the fields set in o replacing its own.
+func (r Repair) merge(o *Repair) Repair {
+	if o == nil {
+		return r
+	}
+	if o.Enabled != nil {
+		r.Enabled = o.Enabled
+	}
+	if o.NotReadyAfter.Duration != 0 {
+		r.NotReadyAfter = o.NotReadyAfter
+	}
+	if o.VMGoneAfter.Duration != 0 {
+		r.VMGoneAfter = o.VMGoneAfter
+	}
+	if o.MaxUnhealthyPercent != 0 {
+		r.MaxUnhealthyPercent = o.MaxUnhealthyPercent
+	}
+	if o.RetryAfter.Duration != 0 {
+		r.RetryAfter = o.RetryAfter
+	}
+	return r
 }
 
 type Cloud struct {
@@ -66,6 +111,8 @@ type NodeGroup struct {
 	// group has no node yet (scale from zero). Keep them equal to what the flavor really gives a node.
 	Resources Resources       `json:"resources"`
 	VNGCloud  *VNGCloudServer `json:"vngcloud,omitempty"`
+	// Repair overrides fields of the top-level repair settings for this group.
+	Repair *Repair `json:"repair,omitempty"`
 }
 
 type Resources struct {
@@ -117,6 +164,19 @@ func (c *Config) applyDefaults() {
 	if c.Bootstrap.TokenTTL.Duration == 0 {
 		c.Bootstrap.TokenTTL.Duration = 15 * time.Minute
 	}
+	r := &c.Repair
+	if r.NotReadyAfter.Duration == 0 {
+		r.NotReadyAfter.Duration = 10 * time.Minute
+	}
+	if r.VMGoneAfter.Duration == 0 {
+		r.VMGoneAfter.Duration = 2 * time.Minute
+	}
+	if r.MaxUnhealthyPercent == 0 {
+		r.MaxUnhealthyPercent = 20
+	}
+	if r.RetryAfter.Duration == 0 {
+		r.RetryAfter.Duration = 30 * time.Minute
+	}
 	for i := range c.NodeGroups {
 		g := &c.NodeGroups[i]
 		if g.NamePrefix == "" {
@@ -156,8 +216,22 @@ func (c *Config) Validate() error {
 		add("bootstrap.tokenTTL (%s) must not exceed maxProvisionTime (%s)", c.Bootstrap.TokenTTL.Duration, c.MaxProvisionTime.Duration)
 	}
 
+	checkRepair := func(where string, r Repair) {
+		if r.MaxUnhealthyPercent < 1 || r.MaxUnhealthyPercent > 100 {
+			add("%srepair.maxUnhealthyPercent must be 1..100, got %d", where, r.MaxUnhealthyPercent)
+		}
+		// below ~1m the node controller has not even marked a silent kubelet NotReady (40s grace)
+		if r.NotReadyAfter.Duration < time.Minute || r.VMGoneAfter.Duration < time.Minute {
+			add("%srepair.notReadyAfter and repair.vmGoneAfter must be at least 1m", where)
+		}
+	}
+	checkRepair("", c.Repair)
+
 	seen := map[string]bool{}
 	for _, g := range c.NodeGroups {
+		if g.Repair != nil {
+			checkRepair("node group "+g.Name+": ", c.RepairFor(g))
+		}
 		if !nameRe.MatchString(g.Name) {
 			add("node group name %q must be a lowercase DNS label", g.Name)
 		}
@@ -201,6 +275,9 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// RepairFor returns the repair settings of a group: the top-level ones with the group's overrides applied.
+func (c *Config) RepairFor(g NodeGroup) Repair { return c.Repair.merge(g.Repair) }
 
 func (c *Config) Group(name string) (NodeGroup, bool) {
 	for _, g := range c.NodeGroups {

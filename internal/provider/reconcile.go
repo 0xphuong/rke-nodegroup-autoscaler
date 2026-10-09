@@ -21,8 +21,18 @@ const orphanRecordAge = 5 * time.Minute
 const deleteRetryAfter = 3 * time.Minute
 
 // nodeLostAfter: a Running instance whose Node object has been gone this long while its VM still exists is
-// failed, so cluster-autoscaler replaces it instead of counting a node that does not exist.
+// replaced (or, with repair disabled, failed so cluster-autoscaler replaces it) instead of counting a node that
+// does not exist. A deleted Node does not come back by itself: kubelet registers only when it starts.
 const nodeLostAfter = 5 * time.Minute
+
+// createRetryAfter: a repair whose create call failed (quota, cloud API down) is retried after this.
+const createRetryAfter = 5 * time.Minute
+
+// view is what one reconcile pass knows about the cluster's nodes.
+type view struct {
+	// nodes: the Node objects carrying the node group label, by providerID
+	nodes map[string]corev1.Node
+}
 
 // Run reconciles every interval until ctx is done.
 func (p *Provider) Run(ctx context.Context, interval time.Duration) {
@@ -44,35 +54,48 @@ func (p *Provider) ReconcileOnce(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	nodes, err := p.groupNodes(ctx)
+	v, err := p.observe(ctx)
 	if err != nil {
 		p.Log.Error("list nodes", "err", err)
 		return
 	}
 	for _, r := range p.Store.List("") {
-		if err := p.reconcileRecord(ctx, r, nodes); err != nil {
+		// re-read: an earlier record of this pass may have changed this one (a repair links two records)
+		cur, ok := p.Store.Get(r.Name)
+		if !ok {
+			continue
+		}
+		if err := p.reconcileRecord(ctx, cur, v); err != nil {
 			p.Log.Error("reconcile", "node", r.Name, "phase", r.Phase, "err", err)
 		}
 	}
-	p.reconcileOrphanNodes(ctx, nodes)
+	p.reconcileOrphanNodes(ctx, v.nodes)
 }
 
-// groupNodes returns the Node objects carrying the node group label, by providerID.
-func (p *Provider) groupNodes(ctx context.Context) (map[string]corev1.Node, error) {
+func (p *Provider) observe(ctx context.Context) (*view, error) {
 	list, err := p.Kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: config.GroupLabel})
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]corev1.Node{}
+	v := &view{nodes: map[string]corev1.Node{}}
 	for _, n := range list.Items {
 		if n.Spec.ProviderID != "" {
-			out[n.Spec.ProviderID] = n
+			v.nodes[n.Spec.ProviderID] = n
 		}
 	}
-	return out, nil
+	return v, nil
 }
 
-func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes map[string]corev1.Node) error {
+// nodeOf returns the Node of an instance, also when it lost the group label.
+func (p *Provider) nodeOf(ctx context.Context, r state.Record, v *view) (corev1.Node, bool) {
+	if n, ok := v.nodes[r.ProviderID]; ok {
+		return n, true
+	}
+	return p.nodeStillThere(ctx, r)
+}
+
+func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, v *view) error {
+	nodes := v.nodes
 	now := p.Now()
 	switch r.Phase {
 	case state.Creating:
@@ -94,9 +117,13 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 			return p.fail(ctx, r, "VM is in status "+inst.RawStatus)
 		}
 		if n, ok := nodes[r.ProviderID]; ok && nodeReady(n) {
-			p.Log.Info("node registered", "node", r.Name, "group", r.Group)
+			attrs := []any{"node", r.Name, "group", r.Group}
+			if r.Replaces != "" {
+				attrs = append(attrs, "replaces", r.Replaces)
+			}
+			p.Log.Info("node registered", attrs...)
 			return p.Store.Update(ctx, r.Name, func(x *state.Record) bool {
-				x.Phase, x.TokenHash, x.Message = state.Running, "", ""
+				x.Phase, x.TokenHash, x.Message, x.Replaces = state.Running, "", "", ""
 				return true
 			})
 		}
@@ -106,12 +133,23 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 		return nil
 
 	case state.Running:
-		if _, ok := nodes[r.ProviderID]; ok || p.nodeStillThere(ctx, r) {
+		n, ok := p.nodeOf(ctx, r, v)
+		if ok {
 			if r.NodeMissingSince != nil {
 				p.Log.Info("node is back", "node", r.Name)
 				return p.Store.Update(ctx, r.Name, func(x *state.Record) bool { x.NodeMissingSince = nil; return true })
 			}
-			return nil
+			if nodeReady(n) {
+				if r.NotReadySince != nil || r.RepairAfter != nil {
+					// a new NotReady episode starts from scratch
+					return p.Store.Update(ctx, r.Name, func(x *state.Record) bool {
+						x.NotReadySince, x.RepairAfter = nil, nil
+						return true
+					})
+				}
+				return nil
+			}
+			return p.repairNotReady(ctx, r, n, v)
 		}
 		// Node object gone: was the VM deleted behind our back?
 		_, err := p.Driver.Get(ctx, r.ID)
@@ -122,16 +160,31 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 		if err != nil {
 			return err
 		}
-		// VM still there but no Node: give kubelet time to re-register, then fail the instance so
-		// cluster-autoscaler deletes it and creates a working one (it must not count towards minSize)
+		// VM still there but no Node: give kubelet time to re-register, then replace the instance (it must not
+		// count towards minSize)
 		if r.NodeMissingSince == nil {
 			p.Log.Warn("node object is gone while its VM exists", "node", r.Name)
 			return p.Store.Update(ctx, r.Name, func(x *state.Record) bool { x.NodeMissingSince = &now; return true })
 		}
-		if now.Sub(*r.NodeMissingSince) > nodeLostAfter {
-			return p.fail(ctx, r, "node object gone for more than "+nodeLostAfter.String()+" while the VM exists")
+		if now.Sub(*r.NodeMissingSince) <= nodeLostAfter {
+			return nil
 		}
-		return nil
+		why := "node object gone for more than " + nodeLostAfter.String() + " while the VM exists"
+		g, gok := p.Config.Group(r.Group)
+		if !gok || !p.Config.RepairFor(g).On() {
+			return p.fail(ctx, r, why)
+		}
+		if r.RepairAfter != nil && now.Before(*r.RepairAfter) {
+			return nil
+		}
+		if p.repairBlocked(ctx, g, r, v) {
+			return nil
+		}
+		// without a Node object the old VM serves nothing: delete it right away
+		return p.repair(ctx, g, r, true, why)
+
+	case state.Replacing:
+		return p.reconcileReplacing(ctx, r, v)
 
 	case state.Deleting:
 		if r.ID != "" {
@@ -154,6 +207,8 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 			if err := p.deleteNode(ctx, n); err != nil {
 				return err
 			}
+			// gone now: the orphan pass of this reconcile must not see it again
+			delete(nodes, r.ProviderID)
 		}
 		p.Log.Info("instance removed", "node", r.Name, "group", r.Group)
 		return p.Store.Remove(ctx, r.Name)
@@ -166,9 +221,12 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, nodes ma
 }
 
 // nodeStillThere covers a Node that exists but lost the group label (edited by hand): it is not lost.
-func (p *Provider) nodeStillThere(ctx context.Context, r state.Record) bool {
+func (p *Provider) nodeStillThere(ctx context.Context, r state.Record) (corev1.Node, bool) {
 	n, err := p.Kube.CoreV1().Nodes().Get(ctx, r.Name, metav1.GetOptions{})
-	return err == nil && n.Spec.ProviderID == r.ProviderID
+	if err != nil || n.Spec.ProviderID != r.ProviderID {
+		return corev1.Node{}, false
+	}
+	return *n, true
 }
 
 func (p *Provider) fail(ctx context.Context, r state.Record, msg string) error {
@@ -212,6 +270,16 @@ func (p *Provider) deleteNode(ctx context.Context, n corev1.Node) error {
 		return nil
 	}
 	return err
+}
+
+// notReadySince is when the node's Ready condition last changed; false when the node never reported one.
+func notReadySince(n corev1.Node) (time.Time, bool) {
+	for _, c := range n.Status.Conditions {
+		if c.Type == corev1.NodeReady && c.Status != corev1.ConditionTrue && !c.LastTransitionTime.IsZero() {
+			return c.LastTransitionTime.Time, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func nodeReady(n corev1.Node) bool {

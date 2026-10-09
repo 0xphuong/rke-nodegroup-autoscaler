@@ -70,6 +70,28 @@ func LoadBundle(dir string) (Bundle, error) {
 	return b, nil
 }
 
+// CopyBundle copies exactly the CertFiles from one directory to another, readable by owner and group only.
+// It runs in the provider pod's init container when the certificates come from the node's /etc/kubernetes/ssl
+// (hostPath, root-owned): the provider itself stays non-root and reads the copy through its fsGroup. Only the
+// listed files are read; the cluster CA key next to them is never touched.
+func CopyBundle(from, to string) error {
+	b, err := LoadBundle(from)
+	if err != nil {
+		return err
+	}
+	for _, f := range CertFiles {
+		dst := filepath.Join(to, f)
+		if err := os.WriteFile(dst, b[f], 0o440); err != nil {
+			return fmt.Errorf("copy %s: %w", f, err)
+		}
+		// WriteFile only applies the mode to new files, and through the umask
+		if err := os.Chmod(dst, 0o440); err != nil {
+			return fmt.Errorf("copy %s: %w", f, err)
+		}
+	}
+	return nil
+}
+
 type UserDataParams struct {
 	NodeName  string
 	Token     string

@@ -73,6 +73,8 @@ metadata:
 spec:
   # one writer of the instance records
   replicas: 1
+  # enough to roll back a few upgrades; the default 10 piles up old ReplicaSets
+  revisionHistoryLimit: 3
   strategy:
     type: Recreate
   selector:
@@ -84,6 +86,9 @@ spec:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         checksum/config: {{ include (print $.Template.BasePath "/provider-config.yaml") . | sha256sum }}
         checksum/bootstrap-ips: {{ toJson .Values.bootstrap.nodeIPs | sha256sum }}
+        {{- $t := include "ngas.tls" . | fromYaml }}
+        # the provider loads its gRPC and bootstrap certificates at start: restart when one is re-issued
+        checksum/tls: {{ printf "%s%s%s%s" $t.grpcServer.id $t.grpcServer.notAfter $t.boot.id $t.boot.notAfter | sha256sum }}
         {{- with .Values.nodeCerts.files }}
         checksum/node-certs: {{ toJson . | sha256sum }}
         {{- end }}
@@ -115,6 +120,29 @@ spec:
       {{- with .Values.provider.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.nodeCerts.hostPath }}
+      # Copies the 7 RKE node certificate files from the node (root-owned, see values nodeCerts.hostPath) into
+      # a memory volume the non-root provider reads through its fsGroup. Each file is mounted on its own, so the
+      # cluster CA key and the control plane keys next to them are never visible in the pod.
+      initContainers:
+        - name: copy-node-certs
+          image: "{{ $.Values.provider.image.repository }}:{{ $.Values.provider.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.provider.image.pullPolicy }}
+          args: [copy-node-certs, --from=/host-node-certs, --to=/etc/nodegroup-provider/node-certs]
+          securityContext:
+            # root only to read the root-owned files; no capabilities, nothing else writable
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{- toYaml $.Values.provider.resources | nindent 12 }}
+          volumeMounts:
+            - {name: node-certs, mountPath: /etc/nodegroup-provider/node-certs}
+            {{- range $f := splitList " " (include "ngas.certFileNames" $) }}
+            - {name: host-{{ $f | replace "." "-" }}, mountPath: /host-node-certs/{{ $f }}, readOnly: true}
+            {{- end }}
+      {{- end }}
       containers:
         - name: provider
           image: "{{ .Values.provider.image.repository }}:{{ .Values.provider.image.tag | default .Chart.AppVersion }}"
@@ -138,9 +166,13 @@ spec:
           ports:
             - {name: grpc, containerPort: 8086}
             - {name: bootstrap, containerPort: 8443}
+          # Recreate leaves cluster-autoscaler without a provider between the old pod stopping and the new one
+          # becoming Ready; probe often so the Service gets the new endpoint within ~2s of start. /healthz
+          # answers only after the gRPC port is already listening (see main.go).
           readinessProbe:
             httpGet: {path: /healthz, port: bootstrap, scheme: HTTPS}
-            periodSeconds: 10
+            periodSeconds: 2
+            failureThreshold: 3
           livenessProbe:
             tcpSocket: {port: grpc}
             initialDelaySeconds: 10
@@ -164,8 +196,17 @@ spec:
           configMap: {name: {{ $name }}-config}
         - name: worker-template
           configMap: {name: {{ include "ngas.workerTemplateConfigMap" . }}}
+        {{- if .Values.nodeCerts.hostPath }}
+        - name: node-certs
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        {{- range $f := splitList " " (include "ngas.certFileNames" $) }}
+        - name: host-{{ $f | replace "." "-" }}
+          hostPath: {path: {{ printf "%s/%s" (trimSuffix "/" $.Values.nodeCerts.hostPath) $f }}, type: File}
+        {{- end }}
+        {{- else }}
         - name: node-certs
           secret: {secretName: {{ include "ngas.nodeCertsSecret" . }}, defaultMode: 0400}
+        {{- end }}
         - name: grpc-tls
           secret: {secretName: {{ $name }}-grpc-tls, defaultMode: 0400}
         - name: bootstrap-tls

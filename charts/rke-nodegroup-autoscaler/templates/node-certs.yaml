@@ -1,4 +1,4 @@
-{{- with .Values.nodeCerts.files }}
+{{- if and .Values.nodeCerts.files (not .Values.nodeCerts.hostPath) }}
 # Created only when nodeCerts.files is set in values. The shared RKE node certificates (kube-node,
 # kube-proxy) that every new node gets through its join script.
 apiVersion: v1
@@ -9,7 +9,7 @@ metadata:
   labels: {{- include "ngas.labels" $ | nindent 4 }}
 type: Opaque
 stringData:
-  {{- range $name := list "kube-ca.pem" "kube-node.pem" "kube-node-key.pem" "kube-proxy.pem" "kube-proxy-key.pem" "kubecfg-kube-node.yaml" "kubecfg-kube-proxy.yaml" }}
+  {{- range $name := splitList " " (include "ngas.certFileNames" $) }}
   {{ $name }}: {{ index $.Values.nodeCerts.files $name | quote }}
   {{- end }}
 {{- end }}

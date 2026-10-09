@@ -13,6 +13,7 @@ data:
   config.yaml: |
     clusterName: {{ .Values.clusterName }}
     maxProvisionTime: {{ .Values.maxProvisionTime }}
+    repair: {{- toYaml .Values.repair | nindent 6 }}
     cloud:
       provider: vngcloud
       vngcloud:

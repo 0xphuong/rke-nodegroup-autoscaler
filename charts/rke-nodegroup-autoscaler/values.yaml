@@ -1,72 +1,117 @@
-# Name used in VM tags and as the default VM/node name prefix. Lowercase DNS label.
+# Tên cluster: ghi vào tag của VM (rke-autoscaler-cluster) và làm tiền tố mặc định cho tên VM/node.
+# Bắt buộc, dạng DNS label viết thường (a-z, 0-9, -).
 clusterName: ""
 
 # --- Node groups -------------------------------------------------------------------------------------------
-# Each group is a set of identical VMs cluster-autoscaler resizes between minSize and maxSize.
+# Mỗi group là một nhóm VM giống hệt nhau, cluster-autoscaler co giãn trong khoảng [minSize, maxSize].
+# Node do provider tạo mang label rke-autoscaler.io/nodegroup=<name>; node khác (control plane, worker RKE,
+# node join tay) không bao giờ bị đụng tới.
 nodeGroups: []
-#  - name: app
-#    minSize: 0
-#    maxSize: 5
-#    # namePrefix: dev-app          # default <clusterName>-<name>; a random suffix is appended
-#    labels:                        # kubernetes.io/ and k8s.io/ prefixes are refused by kubelet
-#      workload: app
-#    taints: []                     # e.g. ["dedicated=app:NoSchedule"]
-#    # what ONE VM gives a node; used to simulate scale from zero. Keep it equal to the flavor (minus reserved).
+#  - name: app                      # tên group, DNS label; cũng là giá trị label rke-autoscaler.io/nodegroup
+#    minSize: 0                     # số node tối thiểu; > 0 thì tạo sẵn ngay cả khi không có pod chờ
+#                                   # (cần enforce-node-group-min-size, đã bật mặc định)
+#    maxSize: 5                     # số node tối đa cluster-autoscaler được scale lên
+#    # namePrefix: dev-app          # tiền tố tên VM/node, mặc định <clusterName>-<name>; thêm hậu tố ngẫu nhiên
+#                                   # 6 ký tự. Tối đa 50 ký tự
+#    labels:                        # label gắn lúc kubelet đăng ký (--node-labels). Không dùng tiền tố
+#      workload: app                # kubernetes.io/ và k8s.io/ (kubelet từ chối)
+#    taints: []                     # taint gắn lúc đăng ký (--register-with-taints), dạng key=value:Effect
+#                                   # hoặc key:Effect, ví dụ ["dedicated=app:NoSchedule"]
+#    # Tài nguyên của MỘT VM, dùng để mô phỏng node mới khi group chưa có node nào (scale từ 0). Đặt bằng
+#    # allocatable thật của flavor (trừ phần OS và container RKE dùng); sai thì cluster-autoscaler tính sai
+#    # pod nào vừa node.
 #    resources:
 #      cpu: "4"
 #      memory: 8Gi
-#      pods: "110"
-#      ephemeralStorage: 50Gi
-#    vngcloud:
-#      imageId: img-...             # Ubuntu 20.04 with the docker version of the cluster (pre-pulled images = fast)
-#      flavorId: flav-...
-#      rootDiskTypeId: vtype-...
-#      rootDiskSize: 50
+#      pods: "110"                  # mặc định 110 (max-pods của kubelet)
+#      ephemeralStorage: 50Gi       # tuỳ chọn
+#    vngcloud:                      # thông số tạo VM trên VNG Cloud (lấy từ một worker có sẵn)
+#      imageId: img-...             # Ubuntu có sẵn Docker đúng version của cluster và đã pull sẵn image
+#                                   # (xem docs/vm-image.md); image trắng thì cài Docker qua initScripts
+#      flavorId: flav-...           # cấu hình CPU/RAM
+#      rootDiskTypeId: vtype-...    # loại ổ đĩa gốc
+#      rootDiskSize: 50             # GB
 #      networkId: net-...
-#      subnetId: sub-...
-#      securityGroups: [secg-...]   # must allow the RKE worker ports and reach the control plane on 6443
-#      sshKeyId: ""                 # optional, for debugging
-#      serverGroupId: ""            # optional, anti-affinity
-#      zoneId: ""
-#      tags: {}
+#      subnetId: sub-...            # subnet phải tới được control plane (6443) và bootstrap NodePort
+#      securityGroups: [secg-...]   # phải mở các port worker RKE và cho đi tới control plane
+#      sshKeyId: ""                 # tuỳ chọn, SSH key của VNG Cloud để debug
+#      serverGroupId: ""            # tuỳ chọn, server group anti-affinity (giới hạn số VM đặt được)
+#      zoneId: ""                   # tuỳ chọn, mặc định lấy vngcloud.zoneId
+#      tags: {}                     # tag thêm cho VM
+#    # repair: {enabled: false}     # tuỳ chọn, ghi đè từng trường của repair (xem bên dưới) cho riêng group này
 
-# A VM that is not a Ready node this long after creation is reported failed; cluster-autoscaler deletes it.
-# Also passed to cluster-autoscaler as --max-node-provision-time.
+# VM chưa thành node Ready sau khoảng này (tính từ lúc tạo) thì bị báo lỗi: cluster-autoscaler xoá VM và tạm
+# ngưng scale group đó (backoff 5 → 30 phút). Cũng được truyền cho cluster-autoscaler làm
+# --max-node-provision-time. Phải ≥ bootstrap.tokenTTL. Image dựng sẵn join mất ~5 phút.
 maxProvisionTime: 20m
+
+# --- Node repair ----------------------------------------------------------------------------------------------
+# Provider tự xử lý node hỏng của group. Group đang ở minSize: thay node mới, giữ nguyên số node (cluster-autoscaler
+# bị kẹt ở trường hợp này). Group đang trên minSize: chỉ xoá node hỏng, cluster-autoscaler tự scale up nếu workload
+# cần. Không bị backoff của cluster-autoscaler. Chi tiết từng trường hợp: docs/node-repair.md.
+# Mỗi node group ghi đè được từng trường bằng khối `repair:` riêng.
+repair:
+  # tắt thì node NotReady chỉ do cluster-autoscaler xử lý (scale-down-unready-time), node object mất thì
+  # instance bị báo lỗi để cluster-autoscaler thay
+  enabled: true
+  # VM còn chạy (kubelet/Docker chết, mất mạng) mà node NotReady quá lâu chừng này: ở minSize tạo node mới
+  # trước, xoá node cũ khi node mới Ready; trên minSize chỉ xoá. Tối thiểu 1m; thấp quá thì Docker restart hay mạng chập chờn cũng bị thay oan
+  notReadyAfter: 10m
+  # VM bị xoá / stop / lỗi mà node NotReady quá lâu chừng này: xoá VM cũ (ở minSize thì tạo VM mới cùng lúc).
+  # Tối thiểu 1m.
+  # Đừng stop VM của group để bảo trì: sau chừng này nó bị thay
+  vmGoneAfter: 2m
+  # cầu chì: không sửa khi quá chừng này % node của group (hoặc của cả cluster) cùng hỏng, vì đó thường là sự
+  # cố mạng hoặc control plane, tạo VM mới không giải quyết được. Luôn cho sửa 1 node. Từ 1 đến 100
+  maxUnhealthyPercent: 20
+  # node thay thế không join được thì giữ node cũ và chờ chừng này mới thử thay lại
+  retryAfter: 30m
 
 # --- Cloud --------------------------------------------------------------------------------------------------
 vngcloud:
-  iamEndpoint: https://iamapis.vngcloud.vn/accounts-api
-  vserverEndpoint: ""        # e.g. https://hcm-3.api.vngcloud.vn/vserver/vserver-gateway
-  projectId: ""
-  zoneId: ""
+  iamEndpoint: https://iamapis.vngcloud.vn/accounts-api   # endpoint lấy token IAM
+  vserverEndpoint: ""        # endpoint vServer theo region, ví dụ https://hcm-3.api.vngcloud.vn/vserver/vserver-gateway
+  projectId: ""              # project chứa VM (pro-...)
+  zoneId: ""                 # zone mặc định cho VM, ví dụ HCM03-1A; node group ghi đè được
   credentials:
-    # VNG Cloud service account (client_id / client_secret) that can only create and delete servers in this
-    # project. Two ways:
-    #  a) existingSecret: name of a Secret you created, with keys clientId and clientSecret (recommended);
-    #  b) clientId + clientSecret here: the chart creates the Secret "vngcloud-credentials" (or existingSecret's
-    #     name if also set). Keep such a values file out of git (e.g. a git-ignored secrets.yaml).
+    # Service account VNG Cloud (client_id / client_secret), chỉ nên có quyền tạo/xem/xoá server trong project
+    # này. Hai cách:
+    #  a) existingSecret: tên Secret tự tạo, có key clientId và clientSecret (khuyến nghị);
+    #  b) clientId + clientSecret ở đây: chart tạo Secret "vngcloud-credentials" (hoặc tên existingSecret nếu
+    #     có đặt). Khi đó file values này phải nằm ngoài git (ví dụ secrets.yaml trong .gitignore).
     existingSecret: ""
     clientId: ""
     clientSecret: ""
 
-# --- What a new node runs -----------------------------------------------------------------------------------
-# docker inspect of an existing, healthy RKE worker (no secrets in it). Take it once per cluster and again after
-# every `rke up` that changes the cluster:
+# --- Node mới chạy những gì ---------------------------------------------------------------------------------
+# `docker inspect` của một worker RKE đang chạy tốt (không chứa bí mật): provider lấy ra lệnh docker run của
+# service-sidekick, nginx-proxy, kubelet, kube-proxy rồi đổi hostname/IP/label cho node mới. Lấy một lần cho
+# mỗi cluster và lấy lại sau mỗi lần `rke up` làm thay đổi cluster (nâng version, đổi extra_args...):
+#   scripts/update-worker-template.sh --worker <user>@<worker-ip> --values <file values>
+# hoặc bằng tay:
 #   ssh <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet kube-proxy' > worker-template.json
 #   helm upgrade ... --set-file workerTemplate.json=worker-template.json
 workerTemplate:
   json: ""
-  existingConfigMap: ""      # alternatively: ConfigMap with key worker-template.json
+  existingConfigMap: ""      # hoặc: tên ConfigMap có sẵn với key worker-template.json (khi đó bỏ trống json)
 
-# RKE node certificates, shared by all workers of an RKE1 cluster. Create the Secret from an existing worker:
-#   ssh <worker> 'sudo tar czf - -C /etc/kubernetes/ssl kube-ca.pem kube-node.pem kube-node-key.pem \
-#     kube-proxy.pem kube-proxy-key.pem kubecfg-kube-node.yaml kubecfg-kube-proxy.yaml' | tar xzf - -C node-certs/
-#   kubectl -n <namespace> create secret generic <name> --from-file=node-certs/
+# Bộ cert node của RKE1 (kube-ca, kube-node, kube-proxy và 2 kubeconfig), dùng chung cho mọi node của cluster và
+# được gửi cho VM mới qua bootstrap. Chọn MỘT trong ba nguồn:
 nodeCerts:
-  # a) existingSecret: name of a Secret you created as above (recommended);
-  # b) files: the 7 files inline; the chart creates the Secret (name: existingSecret or rke-node-certs).
-  #    kube-node-key.pem gives near-admin access to an RKE1 cluster: keep such a values file out of git.
+  # a) hostPath (khuyến nghị): đọc thẳng từ thư mục cert RKE của node đang chạy provider, ví dụ /etc/kubernetes/ssl.
+  #    Mọi node RKE (master, etcd, worker) đều có đủ 7 file, nội dung giống nhau. Không có cert nào trong values
+  #    hay Secret. Init container (root, không capability) chỉ mount đúng 7 file, từng file một, rồi copy vào
+  #    volume RAM cho provider (non-root) đọc; kube-ca-key.pem và key của control plane không bao giờ lọt vào pod.
+  #    Nên ghim provider lên control plane (provider.nodeSelector). Namespace cần cho phép hostPath (Pod
+  #    Security "privileged"; kube-system thường là vậy).
+  #    Sau `rke cert rotate`: kubectl -n <ns> rollout restart deploy/<release>-provider
+  hostPath: ""
+  # b) existingSecret: tên Secret tạo từ một node có sẵn:
+  #      ssh <node> 'sudo tar czf - -C /etc/kubernetes/ssl kube-ca.pem kube-node.pem kube-node-key.pem \
+  #        kube-proxy.pem kube-proxy-key.pem kubecfg-kube-node.yaml kubecfg-kube-proxy.yaml' | tar xzf - -C node-certs/
+  #      kubectl -n <namespace> create secret generic <name> --from-file=node-certs/
+  # c) files: dán 7 file vào đây, chart tự tạo Secret (tên: existingSecret hoặc rke-node-certs).
+  #    kube-node-key.pem gần như có quyền admin cluster RKE1: file values này phải nằm ngoài git.
   existingSecret: ""
   files: {}
   #  kube-ca.pem: |
@@ -78,20 +123,25 @@ nodeCerts:
   #  kubecfg-kube-node.yaml: | ...
   #  kubecfg-kube-proxy.yaml: | ...
 
-# --- Bootstrap: how a new VM fetches its join script ----------------------------------------------------------
+# --- Bootstrap: VM mới lấy script join như thế nào ------------------------------------------------------------
 bootstrap:
-  # Addresses of existing nodes the new VM can reach (any node runs kube-proxy, so the NodePort answers on all).
-  # Used as bootstrap endpoints and as IP SANs of the bootstrap server certificate.
+  # IP các node có sẵn mà VM mới gọi tới được (node nào cũng chạy kube-proxy nên NodePort trả lời trên mọi node).
+  # Dùng làm bootstrap endpoint (VM thử lần lượt) và làm IP SAN của cert bootstrap server. Thường là IP control
+  # plane; security group của chúng phải cho subnet node group vào tcp/<nodePort>.
   nodeIPs: []
+  # NodePort của bootstrap server (HTTPS); đổi nếu trùng với service khác trong cluster
   nodePort: 31443
+  # thời hạn token một lần trong user_data của VM. Hết hạn mà VM chưa lấy script join thì VM không join được.
+  # Phải ≤ maxProvisionTime
   tokenTTL: 15m
-  # Site cloud-init run before the join, as in a Terraform cloudinit_config: a #cloud-config document
-  # (users, ssh keys, sshd port...) and #! scripts (base packages, docker). Kept in a Secret, but anything here
-  # still ends up in the VM's user_data, which the cloud console and the metadata API expose: no passwords.
+  # cloud-init của site, chạy trước script join, giống cloudinit_config của Terraform: một tài liệu
+  # #cloud-config (user, SSH key, port sshd...) và các script #! (gói cơ bản, Docker). Lưu trong Secret, nhưng
+  # vẫn nằm trong user_data của VM, đọc được từ console cloud và metadata API: không để mật khẩu ở đây.
+  # Dùng image dựng sẵn (docs/vm-image.md) thì thường chỉ cần cloudConfig, để initScripts rỗng.
   #   --set-file bootstrap.cloudConfig=cloud-config.tpl --set-file 'bootstrap.initScripts[0]=custom-init.sh'
-  cloudConfig: ""
-  initScripts: []
-  # Shell run inside the join script before the join, e.g. when the image has no docker yet:
+  cloudConfig: ""            # một chuỗi bắt đầu bằng #cloud-config; "" nếu không dùng
+  initScripts: []            # danh sách script, mỗi script bắt đầu bằng #!; chạy theo thứ tự
+  # lệnh shell chạy trong script join, ngay trước khi join, ví dụ khi image chưa có Docker:
   #   preJoinScript: |
   #     curl -fsSL https://releases.rancher.com/install-docker/28.1.sh | sh
   preJoinScript: ""
@@ -100,52 +150,84 @@ bootstrap:
 provider:
   image:
     repository: docker.io/binhphuong/rke-nodegroup-autoscaler
-    tag: ""                  # default: chart appVersion
+    tag: ""                  # mặc định: appVersion của chart
     pullPolicy: IfNotPresent
   imagePullSecrets: []
+  # chu kỳ đối chiếu state với cloud và cluster (VM tạo xong chưa, node Ready chưa, node hỏng, dọn node mồ côi)
   reconcileInterval: 30s
   resources:
     requests: {cpu: 20m, memory: 64Mi}
     limits: {memory: 256Mi}
   priorityClassName: system-cluster-critical
+  # Pod của chart không bao giờ chạy trên node mà autoscaler có thể xoá (chart luôn thêm nodeAffinity chặn node
+  # có label rke-autoscaler.io/nodegroup). Nên ghim lên control plane:
+  #   nodeSelector: {node-role.kubernetes.io/controlplane: "true"}
+  #   tolerations:
+  #     - {key: node-role.kubernetes.io/controlplane, operator: Exists, effect: NoSchedule}
+  #     - {key: node-role.kubernetes.io/etcd, operator: Exists, effect: NoExecute}
   nodeSelector: {}
   tolerations: []
-  # Pods of this chart must never run on a node the autoscaler may remove; see _helpers.tpl "ngas.affinity".
+  # affinity bổ sung (podAffinity / podAntiAffinity). Không đặt nodeAffinity ở đây: chart đã dùng khoá đó
   extraAffinity: {}
 
 # --- cluster-autoscaler -------------------------------------------------------------------------------------
 clusterAutoscaler:
   image:
     repository: registry.k8s.io/autoscaling/cluster-autoscaler
-    tag: v1.32.7             # keep the minor equal to the cluster's Kubernetes minor
+    tag: v1.32.7             # giữ minor bằng minor Kubernetes của cluster
     pullPolicy: IfNotPresent
-  # gRPC calls to the provider; IncreaseSize creates the VMs synchronously, so allow for the cloud API.
+  # timeout mỗi lời gọi gRPC tới provider; IncreaseSize tạo VM đồng bộ nên cần đủ cho API cloud
   grpcTimeout: 60s
+  # Tham số dòng lệnh của cluster-autoscaler, mỗi key thành --key=value. Đổi bất kỳ tham số nào thì pod
+  # cluster-autoscaler bị tạo lại và mọi bộ đếm scale-down (unneeded/unready) quay về 0.
+  # Danh sách đầy đủ: https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md
   extraArgs:
+    # mức log: 4 đủ để thấy lý do scale up/down; chạy ổn định có thể hạ xuống 2
     v: 4
-    # create nodes up to each group's minSize even without pending pods (off upstream by default)
+    # tạo đủ minSize node ngay cả khi không có pod chờ (upstream mặc định tắt). Tắt thì minSize chỉ là giới
+    # hạn dưới khi scale down
     enforce-node-group-min-size: true
+    # chọn group nào khi nhiều group cùng phù hợp: least-waste = group thừa ít CPU/RAM nhất sau khi xếp pod.
+    # Khác: random, most-pods, priority (cần ConfigMap)
     expander: least-waste
+    # cho phép scale down
     scale-down-enabled: true
+    # sau một lần scale up DO CLUSTER-AUTOSCALER làm, chờ chừng này mới xét scale down cả cluster (node do
+    # repair tạo không tính). Upstream 10m
     scale-down-delay-after-add: 10m
+    # node READY mà không cần thiết (dưới ngưỡng utilization, pod dời đi được) liên tục chừng này thì bị xoá.
+    # Upstream 10m
     scale-down-unneeded-time: 10m
+    # node NOTREADY liên tục chừng này thì bị xoá (chỉ khi group đang trên minSize). Upstream 20m. Với VM bị
+    # stop/xoá, repair thường xử lý trước (repair.vmGoneAfter)
+    scale-down-unready-time: 10m
+    # node có tổng request CPU và RAM dưới tỷ lệ này so với allocatable mới được coi là không cần thiết.
+    # Upstream 0.5
     scale-down-utilization-threshold: 0.5
+    # không xoá node có pod dùng emptyDir/hostPath (dữ liệu local mất khi xoá). Pod chấp nhận mất thì gắn
+    # annotation cluster-autoscaler.kubernetes.io/safe-to-evict: "true". Upstream true
     skip-nodes-with-local-storage: true
+    # không xoá node có pod kube-system không thuộc DaemonSet (coredns, metrics-server...). Upstream true
     skip-nodes-with-system-pods: true
+    # khi scale down, chờ pod tắt tối đa chừng này giây rồi mới xoá node. Upstream 600
     max-graceful-termination-sec: 600
+    # chia đều node giữa các group giống nhau (cùng label, cùng tài nguyên). Upstream false
     balance-similar-node-groups: false
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 512Mi}
   priorityClassName: system-cluster-critical
+  # như provider: nên ghim lên control plane
   nodeSelector: {}
   tolerations: []
   extraAffinity: {}
 
-# Only let the autoscaler's service accounts delete Node objects that carry the node group label
-# (ValidatingAdmissionPolicy, Kubernetes >= 1.30).
+# Chỉ cho service account của autoscaler xoá Node object có label của node group (ValidatingAdmissionPolicy,
+# Kubernetes >= 1.30). Chỉ tắt khi cluster chưa hỗ trợ.
 nodeDeletionPolicy:
   enabled: true
 
+# NetworkPolicy cho pod provider: cổng gRPC (8086) chỉ nhận từ pod cluster-autoscaler; cổng bootstrap (8443,
+# qua NodePort) mở cho VM mới.
 networkPolicy:
   enabled: true

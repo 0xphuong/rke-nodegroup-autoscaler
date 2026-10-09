@@ -50,8 +50,10 @@ Node mới được dựng **y hệt một worker RKE có sẵn**: provider lấ
   - Đã kiểm chứng trên một cluster RKE 1.32 bằng `kubectl auth can-i --as=system:node --as-group=system:nodes`:
     cert này **get/list/watch Secret và ConfigMap ở mọi namespace**, tạo và xoá pod, patch node.
   - Tức là **giữ được `kube-node-key.pem` gần như có quyền admin.**
-  - Mọi worker RKE hiện có đều đã giữ key này trên đĩa. Giải pháp này thêm ba nơi chứa key:
-    - Secret `nodeCerts.existingSecret`;
+  - Mọi node RKE hiện có (master lẫn worker) đều đã giữ key này trên đĩa. Giải pháp này thêm các nơi chứa key:
+    - bộ nhớ (volume RAM) của pod provider. Với `nodeCerts.hostPath` (khuyến nghị) key được đọc thẳng từ
+      `/etc/kubernetes/ssl` của node đang chạy provider, không nằm trong values hay Secret nào; chỉ khi dùng
+      `existingSecret`/`files` thì có thêm một Secret;
     - join script truyền qua TLS;
     - đĩa của các VM trong node group.
   - Giải pháp **cố ý không sửa RKE hay cluster hiện tại** (không đổi `cluster.yml`, không `rke up`), nên chấp
@@ -82,19 +84,19 @@ NS=kube-system
 kubectl -n $NS create secret generic vngcloud-credentials \
   --from-literal=clientId=... --from-literal=clientSecret=...
 
-# 2. cert node RKE, lấy từ một worker có sẵn
-mkdir node-certs
-ssh <worker> 'sudo tar czf - -C /etc/kubernetes/ssl kube-ca.pem kube-node.pem kube-node-key.pem \
-  kube-proxy.pem kube-proxy-key.pem kubecfg-kube-node.yaml kubecfg-kube-proxy.yaml' | tar xzf - -C node-certs/
-kubectl -n $NS create secret generic rke-node-certs --from-file=node-certs/
-rm -rf node-certs
+# 2. cert node RKE: không cần làm gì. Với nodeCerts.hostPath=/etc/kubernetes/ssl và provider ghim lên master,
+#    provider đọc thẳng 7 file cert từ node (mount từng file, không bao giờ thấy kube-ca-key.pem).
+#    Sau `rke cert rotate`: kubectl -n $NS rollout restart deploy/<release>-provider
+#    (Cách khác: Secret nodeCerts.existingSecret hoặc nodeCerts.files, xem values.yaml.)
 
 # 3. template worker (không chứa bí mật)
 ssh <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet kube-proxy' > worker-template.local.json
 
 # 4. values: xem charts/rke-nodegroup-autoscaler/values.yaml, ví dụ đầy đủ ở ci/test-values.yaml
 helm upgrade --install ngas charts/rke-nodegroup-autoscaler -n $NS \
-  -f values-dev.local.yaml --set-file workerTemplate.json=worker-template.local.json
+  -f values-dev.local.yaml --set-file workerTemplate.json=worker-template.local.json \
+  --set nodeCerts.hostPath=/etc/kubernetes/ssl \
+  --set-json 'provider.nodeSelector={"node-role.kubernetes.io/controlplane":"true"}' 
 ```
 
 Provider **kiểm tra trước khi chạy** (`internal/preflight`) và từ chối khởi động nếu có điểm lệch:
@@ -131,6 +133,31 @@ scripts/update-worker-template.sh --worker <user>@<worker RKE> --values helm_var
 Script chỉ lưu các trường provider dùng, nên khi container restart thì không bị báo là thay đổi. RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
 cũng từ chối template có `generate_serving_certificate`, vì khi đó mỗi node cần cert riêng.
 
+### Công cụ triển khai được hỗ trợ
+
+Chart tự sinh và **giữ lại** CA riêng của release cùng các cert gRPC/bootstrap bằng hàm `lookup` của Helm (đọc
+Secret đang có trên cluster). `lookup` chỉ chạy khi Helm kết nối thật tới cluster lúc cài:
+
+| Cách triển khai | Có `lookup` | Dùng được |
+|---|---|---|
+| `helm install` / `helm upgrade` | Có | ✅ |
+| `helmfile apply` / `sync` | Có (gọi `helm upgrade`) | ✅ |
+| Flux (`HelmRelease`) | Có (helm-controller chạy install/upgrade trong cluster) | ✅ |
+| `helm template \| kubectl apply`, Argo CD, Kustomize `helmCharts` | **Không** (render offline) | ❌ |
+
+Với cách không có `lookup`, **mỗi lần render sinh ra CA mới**:
+- VM đang boot đã nhận CA cũ trong `user_data`, nên không xác minh được cert bootstrap mới và không join được;
+- cluster-autoscaler và provider dùng cặp cert mTLS từ CA khác nhau cho tới khi cả hai restart.
+
+Vì vậy **không dùng chart này với Argo CD hay `helm template`**. Nếu cần GitOps, dùng Flux.
+
+Hai hệ quả nhỏ của `lookup`, không ảnh hưởng tới cluster:
+- `helm template` và `--dry-run=client` luôn in ra cert mới. Muốn render đúng giá trị đang chạy, dùng
+  `helm template ... --dry-run=server --kube-version <x.y.z>` (chỉ đọc Secret, không ghi gì).
+- `helm-diff` bản cũ (ví dụ 3.6) cũng render không có `lookup`, nên `helmfile diff`/`apply` **luôn** báo 4 Secret
+  TLS và checksum của 2 Deployment thay đổi, dù lúc apply thật không có gì đổi và không pod nào restart. Để diff
+  sạch: `helm plugin update diff`, rồi chạy kèm `--diff-args "--dry-run=server"`.
+
 ## Kiểm tra luồng autoscaling
 
 ```bash
@@ -156,6 +183,12 @@ Gỡ lỗi trên VM: `/var/log/rke-nodegroup-bootstrap.log`, `docker logs kubele
   1 replica với strategy `Recreate`.
 - **VM không thành node `Ready` sau `maxProvisionTime`** thì bị báo là lỗi. Cluster Autoscaler sẽ xoá VM đó và
   tạm ngưng scale group đó một thời gian (backoff).
+- **Tự sửa node hỏng (node repair):** node của group bị NotReady, mất node object, hoặc VM bị xoá/stop/lỗi thì
+  provider tự thay bằng VM mới mà giữ nguyên số lượng node của group. Cách này chạy được cả khi group đang ở
+  `minSize`/`maxSize` và không bị backoff của Cluster Autoscaler. VM còn chạy thì tạo node mới trước rồi mới xoá
+  node cũ; VM đã chết thì xoá và tạo song song. Có cầu chì chặn sửa hàng loạt khi nhiều node cùng hỏng. Chi tiết
+  các trường hợp và thời gian: [docs/node-repair.md](docs/node-repair.md).
+- **Image VM dựng sẵn** (Docker, image đã pull): [docs/vm-image.md](docs/vm-image.md).
 - **Node có label của group nhưng VM đã mất** và không có trong state thì bị xoá. Nếu VM vẫn còn, provider chỉ
   ghi log cảnh báo, không tự nhận VM đó về quản lý.
 - **Scale từ 0 node:** khai báo đúng `resources` của flavor, vì Cluster Autoscaler dùng nó để mô phỏng node mới.
@@ -188,7 +221,8 @@ trong `.gitignore`, không bao giờ được commit.
 ## Trạng thái
 
 PoC. Phần đã kiểm chứng:
-- unit test của provider: scale up, scale down, failed, timeout, orphan, min/max;
+- unit test của provider: scale up, scale down, failed, timeout, orphan, min/max, node repair (tạo trước, xoá
+  ngay khi VM chết, node hồi phục, thay thế thất bại, cầu chì, mỗi group một repair);
 - server bootstrap và token;
 - render worker plane, kèm kiểm tra cú pháp bash cho các script sinh ra;
 - mTLS gRPC chạy thật;

@@ -1,3 +1,15 @@
+{{- /* cluster-autoscaler must match the Kubernetes minor version; warn only, a one-off skew can be intended */ -}}
+{{- $tag := .Values.clusterAutoscaler.image.tag | toString | trimPrefix "v" -}}
+{{- $kube := printf "%s.%s" .Capabilities.KubeVersion.Major (.Capabilities.KubeVersion.Minor | trimSuffix "+") -}}
+{{- if regexMatch "^[0-9]+\\.[0-9]+(\\.|$)" $tag -}}
+{{- $caMinor := regexFind "^[0-9]+\\.[0-9]+" $tag -}}
+{{- if ne $caMinor $kube }}
+WARNING: cluster-autoscaler {{ .Values.clusterAutoscaler.image.tag }} does not match Kubernetes {{ $kube }}.
+  cluster-autoscaler simulates scheduling with the scheduler code of its own version; with another minor it can
+  misjudge where pods fit. Set clusterAutoscaler.image.tag to the latest v{{ $kube }}.x release
+  (https://github.com/kubernetes/autoscaler/releases?q=cluster-autoscaler-{{ $kube }}).
+{{ end -}}
+{{- end -}}
 rke-nodegroup-autoscaler is installed in {{ .Release.Namespace }}.
 
 Node groups:

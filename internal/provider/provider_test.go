@@ -29,6 +29,7 @@ type fakeCloud struct {
 	vms      map[string]*cloud.Instance
 	userData map[string]string
 	deletes  []string
+	gets     int
 	failNext error
 }
 
@@ -56,6 +57,7 @@ func (f *fakeCloud) Create(_ context.Context, _ config.NodeGroup, req cloud.Crea
 func (f *fakeCloud) Get(_ context.Context, id string) (cloud.Instance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets++
 	in, ok := f.vms[id]
 	if !ok {
 		return cloud.Instance{}, cloud.ErrNotFound
@@ -72,6 +74,7 @@ func (f *fakeCloud) Delete(_ context.Context, id string) error {
 }
 
 type env struct {
+	t     *testing.T
 	p     *Provider
 	cloud *fakeCloud
 	kube  *fake.Clientset
@@ -88,13 +91,17 @@ func newEnv(t *testing.T) *env {
 			Endpoints: []string{"https://10.0.0.11:31443"},
 			TokenTTL:  metav1.Duration{Duration: 15 * time.Minute},
 		},
+		Repair: config.Repair{
+			NotReadyAfter: metav1.Duration{Duration: 10 * time.Minute}, VMGoneAfter: metav1.Duration{Duration: 2 * time.Minute},
+			MaxUnhealthyPercent: 20, RetryAfter: metav1.Duration{Duration: 30 * time.Minute},
+		},
 		NodeGroups: []config.NodeGroup{{
 			Name: "app", MinSize: 0, MaxSize: 3, NamePrefix: "dev-app",
 			Labels: map[string]string{"debug": "true"}, Taints: []string{"debug=true:NoSchedule"},
 			Resources: config.Resources{CPU: resource.MustParse("4"), Memory: resource.MustParse("8Gi"), Pods: resource.MustParse("110")},
 		}},
 	}
-	e := &env{cloud: newFakeCloud(), kube: fake.NewSimpleClientset(), now: time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC), ctx: context.Background()}
+	e := &env{t: t, cloud: newFakeCloud(), kube: fake.NewSimpleClientset(), now: time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC), ctx: context.Background()}
 	store := state.New(e.kube, "kube-system", "state")
 	if err := store.Load(e.ctx); err != nil {
 		t.Fatal(err)

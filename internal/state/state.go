@@ -30,6 +30,9 @@ const (
 	Running Phase = "Running"
 	// Deleting: VM deletion requested; the record goes away once the VM is gone and the Node object deleted.
 	Deleting Phase = "Deleting"
+	// Replacing: the node stopped working while its VM still runs; a replacement (ReplacedBy) is being
+	// created and this instance is deleted once the replacement is Ready. Not part of the target size.
+	Replacing Phase = "Replacing"
 	// Failed: VM errored or never registered within maxProvisionTime; reported to cluster-autoscaler,
 	// which deletes it.
 	Failed Phase = "Failed"
@@ -48,7 +51,16 @@ type Record struct {
 	DeletingAt  *time.Time `json:"deletingAt,omitempty"`
 	// NodeMissingSince: a Running instance's Node object has been absent since then (VM still there)
 	NodeMissingSince *time.Time `json:"nodeMissingSince,omitempty"`
-	Message          string     `json:"message,omitempty"`
+	// NotReadySince: start of the current NotReady episode of the node. Kept here because the Ready condition's
+	// lastTransitionTime also moves on False <-> Unknown, which would restart the repair timer.
+	NotReadySince *time.Time `json:"notReadySince,omitempty"`
+	// ReplacedBy: name of the instance created to replace this one (set while Replacing).
+	ReplacedBy string `json:"replacedBy,omitempty"`
+	// Replaces: name of the instance this one replaces; cleared once this one is Running.
+	Replaces string `json:"replaces,omitempty"`
+	// RepairAfter: a replacement of this instance failed; no new attempt before then.
+	RepairAfter *time.Time `json:"repairAfter,omitempty"`
+	Message     string     `json:"message,omitempty"`
 }
 
 type Store struct {

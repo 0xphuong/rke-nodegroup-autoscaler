@@ -39,6 +39,21 @@ import (
 var version = "dev"
 
 func main() {
+	// init container mode: copy the RKE node certificates mounted from the host into the pod (see the chart's
+	// nodeCerts.hostPath)
+	if len(os.Args) > 1 && os.Args[1] == "copy-node-certs" {
+		fs := flag.NewFlagSet("copy-node-certs", flag.ExitOnError)
+		from := fs.String("from", "/host-node-certs", "directory with the certificate files mounted from the node")
+		to := fs.String("to", "/etc/nodegroup-provider/node-certs", "directory the provider reads them from")
+		_ = fs.Parse(os.Args[2:])
+		if err := bootstrap.CopyBundle(*from, *to); err != nil {
+			fmt.Fprintln(os.Stderr, "copy-node-certs:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("copied %d node certificate files from %s to %s\n", len(bootstrap.CertFiles), *from, *to)
+		return
+	}
+
 	var (
 		configPath     = flag.String("config", "/etc/nodegroup-provider/config.yaml", "provider configuration")
 		templatePath   = flag.String("worker-template", "/etc/nodegroup-provider/worker-template.json", "docker inspect of an existing worker's service-sidekick, nginx-proxy, kubelet, kube-proxy")

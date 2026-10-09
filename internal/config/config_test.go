@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const valid = `
@@ -60,6 +61,8 @@ func TestLoadRejects(t *testing.T) {
 		"unknown field":       {`minSize: 0`, "minSize: 0\n  maxSzie: 2", "unknown field"},
 		"no resources":        {`resources: {cpu: "4", memory: 8Gi}`, `resources: {}`, "resources"},
 		"unsupported cloud":   {`provider: vngcloud`, `provider: aws`, "not supported"},
+		"repair percent":      {`minSize: 0`, "minSize: 0\n  repair: {maxUnhealthyPercent: 150}", "maxUnhealthyPercent"},
+		"repair too fast":     {`bootstrap:`, "repair: {notReadyAfter: 30s}\nbootstrap:", "at least 1m"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Load(write(t, strings.Replace(valid, tc.from, tc.to, 1)))
@@ -67,5 +70,22 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatalf("want error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestRepairDefaultsAndOverride(t *testing.T) {
+	c, err := Load(write(t, strings.Replace(valid, `minSize: 0`, "minSize: 0\n  repair: {enabled: false, notReadyAfter: 15m}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.Repair
+	if !r.On() || r.NotReadyAfter.Duration != 10*time.Minute || r.VMGoneAfter.Duration != 2*time.Minute ||
+		r.MaxUnhealthyPercent != 20 || r.RetryAfter.Duration != 30*time.Minute {
+		t.Errorf("defaults: %+v", r)
+	}
+	g, _ := c.Group("app")
+	gr := c.RepairFor(g)
+	if gr.On() || gr.NotReadyAfter.Duration != 15*time.Minute || gr.VMGoneAfter.Duration != 2*time.Minute {
+		t.Errorf("override: %+v", gr)
 	}
 }
