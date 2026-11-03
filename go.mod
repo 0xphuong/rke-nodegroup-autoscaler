@@ -3,6 +3,7 @@ module github.com/0xphuong/rke-nodegroup-autoscaler
 go 1.23.1
 
 require (
+	github.com/ucloud/ucloud-sdk-go v0.22.135
 	github.com/vngcloud/vngcloud-go-sdk/v2 v2.21.1-0.20261001125516-a76d5fc0fdbd
 	golang.org/x/sync v0.11.0
 	google.golang.org/grpc v1.69.4
@@ -38,6 +39,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.8 // indirect
+	github.com/konsorten/go-windows-terminal-sequences v1.0.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
@@ -47,6 +49,7 @@ require (
 	github.com/quic-go/qpack v0.4.0 // indirect
 	github.com/quic-go/quic-go v0.41.0 // indirect
 	github.com/refraction-networking/utls v1.6.3 // indirect
+	github.com/sirupsen/logrus v1.3.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	golang.org/x/crypto v0.28.0 // indirect

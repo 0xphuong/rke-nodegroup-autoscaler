@@ -95,7 +95,8 @@ spec:
         checksum/cloud-init: {{ printf "%s%s" .Values.bootstrap.cloudConfig (toJson .Values.bootstrap.initScripts) | sha256sum }}
         {{- if include "ngas.createCredentials" . }}
         # restart the provider when the credentials in values change (the hash reveals nothing)
-        checksum/credentials: {{ printf "%s/%s" .Values.vngcloud.credentials.clientId .Values.vngcloud.credentials.clientSecret | sha256sum }}
+        {{- $cv := (include "ngas.credentials" . | fromYaml).values }}
+        checksum/credentials: {{ printf "%s/%s" (index $cv 0) (index $cv 1) | sha256sum }}
         {{- end }}
     spec:
       serviceAccountName: {{ $name }}
@@ -120,11 +121,33 @@ spec:
       {{- with .Values.provider.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.nodeCerts.hostPath }}
-      # Copies the 7 RKE node certificate files from the node (root-owned, see values nodeCerts.hostPath) into
-      # a memory volume the non-root provider reads through its fsGroup. Each file is mounted on its own, so the
-      # cluster CA key and the control plane keys next to them are never visible in the pod.
+      {{- $fromCP := include "ngas.workerTemplateFromControlPlane" . }}
+      {{- if or .Values.nodeCerts.hostPath $fromCP }}
       initContainers:
+      {{- end }}
+      {{- if $fromCP }}
+        # Reads `docker inspect` of service-sidekick, kubelet and kube-proxy on this control plane node, the worker
+        # template the provider turns into a node's worker plane. Root for the Docker socket, which only this
+        # init container mounts, for a few GET requests; the provider itself never sees the socket.
+        - name: inspect-control-plane
+          image: "{{ .Values.provider.image.repository }}:{{ .Values.provider.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.provider.image.pullPolicy }}
+          args: [inspect-control-plane, --docker-socket=/run/host-docker.sock, --out=/etc/nodegroup-provider/control-plane/inspect.json]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{- toYaml .Values.provider.resources | nindent 12 }}
+          volumeMounts:
+            - {name: control-plane, mountPath: /etc/nodegroup-provider/control-plane}
+            - {name: docker-socket, mountPath: /run/host-docker.sock}
+      {{- end }}
+      {{- with .Values.nodeCerts.hostPath }}
+        # Copies the 7 RKE node certificate files from the node (root-owned, see values nodeCerts.hostPath) into
+        # a memory volume the non-root provider reads through its fsGroup. Each file is mounted on its own, so the
+        # cluster CA key and the control plane keys next to them are never visible in the pod.
         - name: copy-node-certs
           image: "{{ $.Values.provider.image.repository }}:{{ $.Values.provider.image.tag | default $.Chart.AppVersion }}"
           imagePullPolicy: {{ $.Values.provider.image.pullPolicy }}
@@ -149,7 +172,11 @@ spec:
           imagePullPolicy: {{ .Values.provider.image.pullPolicy }}
           args:
             - --config=/etc/nodegroup-provider/config/config.yaml
+            {{- if $fromCP }}
+            - --control-plane-inspect=/etc/nodegroup-provider/control-plane/inspect.json
+            {{- else }}
             - --worker-template=/etc/nodegroup-provider/worker-template/worker-template.json
+            {{- end }}
             - --node-certs=/etc/nodegroup-provider/node-certs
             - --grpc-tls=/etc/nodegroup-provider/grpc-tls
             - --bootstrap-tls=/etc/nodegroup-provider/bootstrap-tls
@@ -159,10 +186,11 @@ spec:
           env:
             - name: POD_NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: VNGCLOUD_CLIENT_ID
-              valueFrom: {secretKeyRef: {name: {{ include "ngas.credentialsSecret" . }}, key: clientId}}
-            - name: VNGCLOUD_CLIENT_SECRET
-              valueFrom: {secretKeyRef: {name: {{ include "ngas.credentialsSecret" . }}, key: clientSecret}}
+            {{- $cr := include "ngas.credentials" . | fromYaml }}
+            {{- range $i, $k := $cr.keys }}
+            - name: {{ index $cr.env $i }}
+              valueFrom: {secretKeyRef: {name: {{ $cr.secret }}, key: {{ $k }}}}
+            {{- end }}
           ports:
             - {name: grpc, containerPort: 8086}
             - {name: bootstrap, containerPort: 8443}
@@ -184,7 +212,11 @@ spec:
             capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: config, mountPath: /etc/nodegroup-provider/config, readOnly: true}
+            {{- if $fromCP }}
+            - {name: control-plane, mountPath: /etc/nodegroup-provider/control-plane, readOnly: true}
+            {{- else }}
             - {name: worker-template, mountPath: /etc/nodegroup-provider/worker-template, readOnly: true}
+            {{- end }}
             - {name: node-certs, mountPath: /etc/nodegroup-provider/node-certs, readOnly: true}
             - {name: grpc-tls, mountPath: /etc/nodegroup-provider/grpc-tls, readOnly: true}
             - {name: bootstrap-tls, mountPath: /etc/nodegroup-provider/bootstrap-tls, readOnly: true}
@@ -194,8 +226,15 @@ spec:
       volumes:
         - name: config
           configMap: {name: {{ $name }}-config}
+        {{- if $fromCP }}
+        - name: control-plane
+          emptyDir: {medium: Memory, sizeLimit: 4Mi}
+        - name: docker-socket
+          hostPath: {path: {{ .Values.workerTemplate.dockerSocket }}, type: Socket}
+        {{- else }}
         - name: worker-template
           configMap: {name: {{ include "ngas.workerTemplateConfigMap" . }}}
+        {{- end }}
         {{- if .Values.nodeCerts.hostPath }}
         - name: node-certs
           emptyDir: {medium: Memory, sizeLimit: 1Mi}

@@ -42,20 +42,50 @@ nodeAffinity:
             operator: DoesNotExist
 {{- end -}}
 
-{{/* the chart creates the credentials Secret when clientId/clientSecret are given in values */}}
-{{- define "ngas.createCredentials" -}}
-{{- if and .Values.vngcloud.credentials.clientId .Values.vngcloud.credentials.clientSecret -}}true{{- end -}}
+{{/* the cloud the node groups live in: vngcloud (default) or ucloud */}}
+{{- define "ngas.cloud" -}}{{ .Values.cloudProvider | default "vngcloud" }}{{- end -}}
+
+{{/*
+Credentials of the selected cloud: the Secret keys, the environment variables the provider reads them from, and
+the values (only set when the chart creates the Secret itself, for testing). Returns YAML.
+*/}}
+{{- define "ngas.credentials" -}}
+{{- if eq (include "ngas.cloud" .) "ucloud" -}}
+{{- $c := .Values.ucloud.credentials -}}
+secret: {{ $c.existingSecret | default "ucloud-credentials" }}
+keys: [publicKey, privateKey]
+env: [UCLOUD_PUBLIC_KEY, UCLOUD_PRIVATE_KEY]
+values: [{{ $c.publicKey | toString | quote }}, {{ $c.privateKey | toString | quote }}]
+{{- else -}}
+{{- $c := .Values.vngcloud.credentials -}}
+secret: {{ $c.existingSecret | default "vngcloud-credentials" }}
+keys: [clientId, clientSecret]
+env: [VNGCLOUD_CLIENT_ID, VNGCLOUD_CLIENT_SECRET]
+values: [{{ $c.clientId | toString | quote }}, {{ $c.clientSecret | toString | quote }}]
+{{- end -}}
 {{- end -}}
 
-{{- define "ngas.credentialsSecret" -}}
-{{- .Values.vngcloud.credentials.existingSecret | default "vngcloud-credentials" -}}
+{{/* the chart creates the credentials Secret when both values are given */}}
+{{- define "ngas.createCredentials" -}}
+{{- $v := (include "ngas.credentials" . | fromYaml).values -}}
+{{- if and (index $v 0) (index $v 1) -}}true{{- end -}}
 {{- end -}}
+
+{{- define "ngas.credentialsSecret" -}}{{ (include "ngas.credentials" . | fromYaml).secret }}{{- end -}}
 
 {{/* the RKE node certificate files a new node needs; the same list as bootstrap.CertFiles in the provider */}}
 {{- define "ngas.certFileNames" -}}kube-ca.pem kube-node.pem kube-node-key.pem kube-proxy.pem kube-proxy-key.pem kubecfg-kube-node.yaml kubecfg-kube-proxy.yaml{{- end -}}
 
 {{- define "ngas.nodeCertsSecret" -}}
 {{- .Values.nodeCerts.existingSecret | default "rke-node-certs" -}}
+{{- end -}}
+
+{{/*
+worker template: read from the control plane node the provider runs on (default), unless one is given by hand in
+workerTemplate.json or workerTemplate.existingConfigMap
+*/}}
+{{- define "ngas.workerTemplateFromControlPlane" -}}
+{{- if not (or .Values.workerTemplate.json .Values.workerTemplate.existingConfigMap) -}}true{{- end -}}
 {{- end -}}
 
 {{- define "ngas.workerTemplateConfigMap" -}}
@@ -82,16 +112,30 @@ nodeAffinity:
 {{- else if not .Values.nodeCerts.existingSecret -}}
 {{- fail "nodeCerts: set hostPath (read from the node, e.g. /etc/kubernetes/ssl), existingSecret or files (see values.yaml)" -}}
 {{- end -}}
-{{- $c := .Values.vngcloud.credentials -}}
-{{- if and (or $c.clientId $c.clientSecret) (not (and $c.clientId $c.clientSecret)) -}}
-{{- fail "vngcloud.credentials: clientId and clientSecret must be set together" -}}
+{{- $cloud := include "ngas.cloud" . -}}
+{{- if not (has $cloud (list "vngcloud" "ucloud")) -}}{{- fail (printf "cloudProvider %q is not supported (vngcloud, ucloud)" $cloud) -}}{{- end -}}
+{{- $cr := include "ngas.credentials" . | fromYaml -}}
+{{- $one := index $cr.values 0 -}}{{- $two := index $cr.values 1 -}}
+{{- $existing := ternary .Values.ucloud.credentials.existingSecret .Values.vngcloud.credentials.existingSecret (eq $cloud "ucloud") -}}
+{{- if and (or $one $two) (not (and $one $two)) -}}
+{{- fail (printf "%s.credentials: %s and %s must be set together" $cloud (index $cr.keys 0) (index $cr.keys 1)) -}}
 {{- end -}}
-{{- if and (not $c.existingSecret) (not (and $c.clientId $c.clientSecret)) -}}
-{{- fail "vngcloud.credentials: set existingSecret, or clientId and clientSecret" -}}
+{{- if and (not $existing) (not (and $one $two)) -}}
+{{- fail (printf "%s.credentials: set existingSecret, or %s and %s" $cloud (index $cr.keys 0) (index $cr.keys 1)) -}}
 {{- end -}}
+{{- if eq $cloud "ucloud" -}}
+{{- if not .Values.ucloud.region -}}{{- fail "ucloud.region is required (e.g. sg)" -}}{{- end -}}
+{{- /* YAML 1.1 reads an unquoted N (machine type) as false */ -}}
+{{- if kindIs "bool" .Values.ucloud.machineType -}}{{- fail "ucloud.machineType must be quoted, e.g. machineType: \"N\" (unquoted N is read as false)" -}}{{- end -}}
+{{- range .Values.nodeGroups -}}{{- if and .ucloud (kindIs "bool" .ucloud.machineType) -}}{{- fail (printf "nodeGroups %s: ucloud.machineType must be quoted, e.g. machineType: \"N\" (unquoted N is read as false)" .name) -}}{{- end -}}{{- end -}}
+{{- else -}}
 {{- if not (and .Values.vngcloud.vserverEndpoint .Values.vngcloud.projectId) -}}{{- fail "vngcloud.vserverEndpoint and vngcloud.projectId are required" -}}{{- end -}}
-{{- if and (not .Values.workerTemplate.json) (not .Values.workerTemplate.existingConfigMap) -}}
-{{- fail "workerTemplate: pass --set-file workerTemplate.json=<docker inspect of a worker> or workerTemplate.existingConfigMap" -}}
+{{- end -}}
+{{- if and .Values.workerTemplate.json .Values.workerTemplate.existingConfigMap -}}
+{{- fail "workerTemplate: set json or existingConfigMap, not both" -}}
+{{- end -}}
+{{- if and (include "ngas.workerTemplateFromControlPlane" .) (ne (index (.Values.provider.nodeSelector | default dict) "node-role.kubernetes.io/controlplane" | toString) "true") -}}
+{{- fail "workerTemplate is read from the control plane node the provider runs on: keep provider.nodeSelector node-role.kubernetes.io/controlplane: \"true\", or give a template in workerTemplate.json / existingConfigMap" -}}
 {{- end -}}
 {{- end -}}
 

@@ -26,6 +26,7 @@ import (
 
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/bootstrap"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/cloud"
+	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/cloud/ucloud"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/cloud/vngcloud"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/config"
 	"github.com/0xphuong/rke-nodegroup-autoscaler/internal/preflight"
@@ -53,10 +54,26 @@ func main() {
 		fmt.Printf("copied %d node certificate files from %s to %s\n", len(bootstrap.CertFiles), *from, *to)
 		return
 	}
+	// init container mode: `docker inspect` the worker plane containers of the control plane node the provider
+	// runs on, so that no worker template has to be taken by hand (see the chart's workerTemplate)
+	if len(os.Args) > 1 && os.Args[1] == "inspect-control-plane" {
+		fs := flag.NewFlagSet("inspect-control-plane", flag.ExitOnError)
+		socket := fs.String("docker-socket", "/var/run/docker.sock", "Docker Engine API socket of the node")
+		out := fs.String("out", "/etc/nodegroup-provider/control-plane/inspect.json", "file the provider reads")
+		wait := fs.Duration("wait", 10*time.Minute, "how long to wait for the containers, e.g. while `rke up` recreates them")
+		_ = fs.Parse(os.Args[2:])
+		if err := inspectControlPlane(*socket, *out, *wait); err != nil {
+			fmt.Fprintln(os.Stderr, "inspect-control-plane:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("wrote docker inspect of %v to %s\n", workerplane.ControlPlaneContainers, *out)
+		return
+	}
 
 	var (
 		configPath     = flag.String("config", "/etc/nodegroup-provider/config.yaml", "provider configuration")
-		templatePath   = flag.String("worker-template", "/etc/nodegroup-provider/worker-template.json", "docker inspect of an existing worker's service-sidekick, nginx-proxy, kubelet, kube-proxy")
+		templatePath   = flag.String("worker-template", "", "docker inspect of an existing worker's service-sidekick, nginx-proxy, kubelet, kube-proxy")
+		cpInspectPath  = flag.String("control-plane-inspect", "", "instead of -worker-template: docker inspect of a control plane node's service-sidekick, kubelet, kube-proxy (written by inspect-control-plane)")
 		bundleDir      = flag.String("node-certs", "/etc/nodegroup-provider/node-certs", "directory with the RKE node certificates (kube-ca.pem, kube-node*.pem, ...)")
 		grpcAddr       = flag.String("grpc-listen", ":8086", "gRPC listen address for cluster-autoscaler")
 		grpcTLSDir     = flag.String("grpc-tls", "/etc/nodegroup-provider/grpc-tls", "directory with tls.crt, tls.key and ca.crt for mTLS with cluster-autoscaler")
@@ -68,13 +85,17 @@ func main() {
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(log, *configPath, *templatePath, *bundleDir, *grpcAddr, *grpcTLSDir, *bootAddr, *bootTLSDir, *cloudInitDir, *stateConfigMap, *interval); err != nil {
+	if (*templatePath == "") == (*cpInspectPath == "") {
+		log.Error("fatal", "err", "set exactly one of -worker-template and -control-plane-inspect")
+		os.Exit(1)
+	}
+	if err := run(log, *configPath, *templatePath, *cpInspectPath, *bundleDir, *grpcAddr, *grpcTLSDir, *bootAddr, *bootTLSDir, *cloudInitDir, *stateConfigMap, *interval); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTLSDir, bootAddr, bootTLSDir, cloudInitDir, stateCM string, interval time.Duration) error {
+func run(log *slog.Logger, configPath, templatePath, cpInspectPath, bundleDir, grpcAddr, grpcTLSDir, bootAddr, bootTLSDir, cloudInitDir, stateCM string, interval time.Duration) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -83,10 +104,6 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 		return errors.New("POD_NAMESPACE must be set")
 	}
 	cfg, err := config.Load(configPath)
-	if err != nil {
-		return err
-	}
-	tmpl, err := workerplane.Load(templatePath)
 	if err != nil {
 		return err
 	}
@@ -112,6 +129,10 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 		if driver, err = vngcloud.New(ctx, cfg.Cloud.VNGCloud); err != nil {
 			return err
 		}
+	case "ucloud":
+		if driver, err = ucloud.New(cfg.Cloud.UCloud); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unsupported cloud %q", cfg.Cloud.Provider)
 	}
@@ -121,6 +142,10 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 		return err
 	}
 	kube, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return err
+	}
+	tmpl, err := loadTemplate(ctx, kube, templatePath, cpInspectPath)
 	if err != nil {
 		return err
 	}
@@ -178,7 +203,8 @@ func run(log *slog.Logger, configPath, templatePath, bundleDir, grpcAddr, grpcTL
 	go func() { errc <- bs.ListenAndServeTLS("", "") }()
 	go p.Run(ctx, interval)
 	log.Info("nodegroup-provider started", "version", version, "grpc", grpcAddr, "bootstrap", bootAddr, "groups", len(cfg.NodeGroups),
-		"cluster", cfg.ClusterName, "kubeletImage", tmpl.KubeletImage())
+		"cluster", cfg.ClusterName, "kubeletImage", tmpl.KubeletImage(), "workerTemplate", templateSource(templatePath),
+		"cpHosts", tmpl.CPHosts())
 
 	select {
 	case <-ctx.Done():
@@ -211,4 +237,46 @@ func mtlsConfig(dir string) (*tls.Config, error) {
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		MinVersion:   tls.VersionTLS12,
 	}, nil
+}
+
+// loadTemplate reads the worker template given by hand, or builds it from the control plane node's containers.
+func loadTemplate(ctx context.Context, kube kubernetes.Interface, templatePath, cpInspectPath string) (*workerplane.Template, error) {
+	if templatePath != "" {
+		return workerplane.Load(templatePath)
+	}
+	b, err := os.ReadFile(cpInspectPath)
+	if err != nil {
+		return nil, err
+	}
+	cps, err := preflight.ControlPlaneIPs(ctx, kube)
+	if err != nil {
+		return nil, fmt.Errorf("list control plane nodes: %w", err)
+	}
+	return workerplane.FromControlPlane(b, cps)
+}
+
+// inspectControlPlane writes the control plane's worker plane containers to out, retrying until they all exist
+// and run: the pod may start while `rke up` is recreating them.
+func inspectControlPlane(socket, out string, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	for {
+		b, err := workerplane.InspectLocal(ctx, socket, workerplane.ControlPlaneContainers)
+		if err == nil {
+			return os.WriteFile(out, b, 0o644)
+		}
+		fmt.Fprintln(os.Stderr, "inspect-control-plane: retrying:", err)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
+func templateSource(templatePath string) string {
+	if templatePath != "" {
+		return templatePath
+	}
+	return "control plane node"
 }

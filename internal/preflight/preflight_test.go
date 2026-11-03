@@ -126,6 +126,10 @@ func TestTemplate(t *testing.T) {
 	if err := Template(context.Background(), ok, tmpl); err != nil {
 		t.Fatalf("matching cluster: %v", err)
 	}
+	cps, err := ControlPlaneIPs(context.Background(), ok)
+	if err != nil || strings.Join(cps, ",") != "10.0.0.11,10.0.0.12,10.0.0.13" {
+		t.Fatalf("control plane IPs: %v %v", cps, err)
+	}
 	upgraded := fake.NewSimpleClientset(node("cp-0", "v1.33.1", "10.0.0.11", true))
 	if err := Template(context.Background(), upgraded, tmpl); err == nil || !strings.Contains(err.Error(), "re-take") {
 		t.Fatalf("after an upgrade the template must be refused, got %v", err)

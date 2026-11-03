@@ -15,18 +15,37 @@ data:
     maxProvisionTime: {{ .Values.maxProvisionTime }}
     repair: {{- toYaml .Values.repair | nindent 6 }}
     cloud:
-      provider: vngcloud
+      provider: {{ include "ngas.cloud" . }}
+      {{- if eq (include "ngas.cloud" .) "ucloud" }}
+      ucloud:
+        region: {{ .Values.ucloud.region | quote }}
+        projectId: {{ .Values.ucloud.projectId | quote }}
+        apiEndpoint: {{ .Values.ucloud.apiEndpoint | quote }}
+        {{- /* node group defaults, rendered only when set */}}
+        {{- range $k := list "zone" "imageId" "machineType" "minimalCpuPlatform" "cpu" "memoryMB" "bootDiskType" "bootDiskSize" "vpcId" "subnetId" "secGroupIds" "securityGroupId" "keyPairId" "chargeType" "isolationGroup" "businessGroup" "tags" }}
+        {{- with index $.Values.ucloud $k }}
+        {{ $k }}: {{ toJson . }}
+        {{- end }}
+        {{- end }}
+      {{- else }}
       vngcloud:
         iamEndpoint: {{ .Values.vngcloud.iamEndpoint | quote }}
         vserverEndpoint: {{ .Values.vngcloud.vserverEndpoint | quote }}
         projectId: {{ .Values.vngcloud.projectId | quote }}
         zoneId: {{ .Values.vngcloud.zoneId | quote }}
+        {{- /* node group defaults, rendered only when set */}}
+        {{- range $k := list "imageId" "flavorId" "rootDiskTypeId" "rootDiskSize" "securityGroups" "sshKeyId" "serverGroupId" "tags" }}
+        {{- with index $.Values.vngcloud $k }}
+        {{ $k }}: {{ toJson . }}
+        {{- end }}
+        {{- end }}
+      {{- end }}
     bootstrap:
       endpoints: {{- toYaml $endpoints | nindent 8 }}
       tokenTTL: {{ .Values.bootstrap.tokenTTL }}
       preJoinScript: {{ .Values.bootstrap.preJoinScript | quote }}
     nodeGroups: {{- toYaml .Values.nodeGroups | nindent 6 }}
-{{- if not .Values.workerTemplate.existingConfigMap }}
+{{- if .Values.workerTemplate.json }}
 ---
 apiVersion: v1
 kind: ConfigMap

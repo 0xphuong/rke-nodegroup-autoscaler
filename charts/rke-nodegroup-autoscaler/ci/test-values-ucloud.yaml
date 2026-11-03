@@ -1,0 +1,33 @@
+# Fake values for `helm lint` / `helm template` in CI with cloudProvider: ucloud. Not a real cluster.
+clusterName: sg
+cloudProvider: ucloud
+ucloud:
+  region: sg
+  projectId: org-00000000
+  # node group defaults
+  zone: sg-02
+  imageId: uimage-00000000
+  machineType: "N"
+  cpu: 2
+  memoryMB: 4096
+  bootDiskType: CLOUD_SSD
+  bootDiskSize: 20
+  vpcId: uvnet-00000000
+  subnetId: subnet-00000000
+  secGroupIds: [secgroup-00000000]
+  credentials:
+    existingSecret: ucloud-credentials
+nodeCerts:
+  hostPath: /etc/kubernetes/ssl
+# workerTemplate: default, read from the control plane node the provider runs on
+bootstrap:
+  nodeIPs: [10.0.0.11, 10.0.0.12, 10.0.0.13]
+nodeGroups:
+  - name: app
+    minSize: 0
+    maxSize: 3
+    resources: {cpu: "4", memory: 15Gi, pods: "110"}
+    ucloud: {machineType: O, cpu: 4, memoryMB: 16384, bootDiskType: CLOUD_RSSD, bootDiskSize: 40}
+  - name: small                     # every UHost parameter from ucloud:
+    maxSize: 2
+    resources: {cpu: "2", memory: 3700Mi}

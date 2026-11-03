@@ -33,7 +33,9 @@ check-version:
 
 chart-lint:
 	helm lint $(CHART) -f $(CHART)/ci/test-values.yaml
+	helm lint $(CHART) -f $(CHART)/ci/test-values-ucloud.yaml
 
 chart-template:
 	helm template ngas $(CHART) -n kube-system --kube-version 1.32.6 -f $(CHART)/ci/test-values.yaml \
 	  --set-file workerTemplate.json=internal/workerplane/testdata/worker-template.json
+	helm template ngas $(CHART) -n kube-system --kube-version 1.32.6 -f $(CHART)/ci/test-values-ucloud.yaml

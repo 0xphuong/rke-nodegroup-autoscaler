@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Managed node groups + cluster-autoscaler for **RKE1** clusters on **VNG Cloud**, without changing RKE
+Managed node groups + cluster-autoscaler for **RKE1** clusters on **VNG Cloud** or **UCloud**, without changing RKE
 (`cluster.yml`, `rke up`) or the existing cluster. One Go binary (`nodegroup-provider`, the externalgrpc cloud
 provider) and one Helm chart (`charts/rke-nodegroup-autoscaler`) that also runs upstream cluster-autoscaler.
 README, docs, CHANGELOG and the comments in `values.yaml` are in Vietnamese; Go code and comments are in English.
@@ -16,7 +16,7 @@ come from `../CLAUDE.md`.
 make test                    # go test -race -count=1 ./...
 make lint                    # go vet
 go test ./internal/provider -run 'TestRepair' -v      # one package / one test
-make chart-lint              # helm lint with ci/test-values.yaml
+make chart-lint              # helm lint with ci/test-values.yaml and ci/test-values-ucloud.yaml
 make chart-template          # helm template, already passes --kube-version 1.32.6
 make check-version TAG=vX.Y.Z  # tag == Chart.yaml version == appVersion
 make push ARGS="..."         # scripts/release-image.sh: tests, multi-arch buildx, push to Docker Hub
@@ -48,8 +48,12 @@ make push ARGS="..."         # scripts/release-image.sh: tests, multi-arch build
   runs, delete+create together when the VM is gone/stopped/error or the Node object is lost); **above minSize**
   only delete and let CA scale up. Circuit breaker (`repair.maxUnhealthyPercent`, per group and cluster wide), one
   repair per group, `notReadySince` kept in state. Full case list with timings: `docs/node-repair.md`.
-- `cloud/` is the driver interface (`Create/Get/Delete`, `ErrNotFound`, `ErrRetryLater`); `cloud/vngcloud` maps
-  vServer statuses to phases.
+- `cloud/` is the driver interface (`Create/Get/Delete`, `ErrNotFound`, `ErrRetryLater`, phases incl. `Stopped`).
+  Drivers: `cloud/vngcloud` (vServer) and `cloud/ucloud` (UHost, behind a small `api` interface faked in tests),
+  picked by `cloud.provider` in `main.go`. UCloud only terminates stopped hosts: `Delete` powers off and returns
+  `ErrRetryLater`; reconcile calls it again as soon as the VM reports `Stopped`. Adding a cloud = a driver, a
+  config struct + validation in `internal/config`, and the `ngas.credentials` / provider-config branches of the
+  chart (`cloudProvider` selects them). `docs/ucloud.md` has the UCloud specifics.
 - `bootstrap/`: a new VM gets a one-time token in `user_data` (only its sha256 is stored) and fetches its join
   script over HTTPS from the provider via a **NodePort** on existing nodes (it is not in the cluster yet).
   `user_data` is MIME multipart: site cloud-init parts first, join script last. The join script carries the shared
@@ -82,9 +86,13 @@ make push ARGS="..."         # scripts/release-image.sh: tests, multi-arch build
   explicitly; the test cluster's context is `CONTEXT` in `deploy/<cluster>/deploy.sh`. Do not change existing nodes
   or RKE; only act on node-group nodes.
 - `helm_vars/`, `helmfile.yaml` and `deploy/` are git-ignored and hold real values (VNG client secret, IPs).
+  One independent, complete values file per cloud: `helm_vars/values-vngcloud.yaml`, `helm_vars/values-ucloud.yaml`.
   Never print their secrets. This repo is public: grep new work for internal IPs, hostnames and IDs before
   committing.
-- Real worker template and test manifests live in `deploy/<cluster>/`; refresh the template after `rke up`
-  with `scripts/update-worker-template.sh`.
+- Test manifests live in `deploy/<cluster>/`. The worker template is read from the control plane node the
+  provider runs on (init container `inspect-control-plane` over the Docker socket, `workerplane.FromControlPlane`
+  drops the role taints and builds nginx-proxy from the control plane IPs); `workerTemplate.json` /
+  `existingConfigMap` override it with a worker's template (`scripts/update-worker-template.sh`). After `rke up`:
+  `rollout restart` the provider. Old hand-taken templates sit in `deploy/worker-templates/` (git-ignored).
 - `helm-diff` 3.6 renders without `lookup`, so `helmfile diff` always shows the TLS Secrets as changed; that is
   display only.

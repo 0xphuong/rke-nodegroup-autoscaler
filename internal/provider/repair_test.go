@@ -628,3 +628,27 @@ func TestNoDuplicateOrphanDeleteAndCleanRegisterLog(t *testing.T) {
 		t.Fatalf("the node was already deleted by the Deleting step: %s", buf.String())
 	}
 }
+
+// A cloud that powers off before it terminates (UCloud): the terminate step runs on the next reconcile pass
+// once the VM is Stopped, not after deleteRetryAfter.
+func TestDeleteTwoStepCloudFinishesNextPass(t *testing.T) {
+	e := newEnv(t)
+	e.cloud.powerOffFirst = true
+	old, _ := e.runningInstance(t)
+	if _, err := e.p.NodeGroupDeleteNodes(e.ctx, &protos.NodeGroupDeleteNodesRequest{Id: "app",
+		Nodes: []*protos.ExternalGrpcNode{{ProviderID: old.ProviderID}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.cloud.deletes) != 0 || e.phase(old.Name) != state.Deleting {
+		t.Fatalf("first call only powers off: deletes %v, phase %s", e.cloud.deletes, e.phase(old.Name))
+	}
+	e.now = e.now.Add(30 * time.Second) // one reconcile interval, well under deleteRetryAfter
+	e.p.ReconcileOnce(e.ctx)
+	if len(e.cloud.deletes) != 1 {
+		t.Fatalf("the stopped VM must be terminated on the next pass, deletes %v", e.cloud.deletes)
+	}
+	e.p.ReconcileOnce(e.ctx)
+	if e.phase(old.Name) != "gone" {
+		t.Fatalf("record must be gone, got %s", e.phase(old.Name))
+	}
+}

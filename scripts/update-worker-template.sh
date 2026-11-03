@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# update-worker-template.sh — refresh workerTemplate.json in a values file from a live RKE worker.
+# update-worker-template.sh — take the worker template (docker inspect of a live RKE worker) of one cluster.
 #
-# Run it after every `rke up` that changes the cluster (Kubernetes/RKE upgrade, kubelet or kube-proxy
+# Not needed by default: the provider reads the template from the control plane node it runs on. Use this only
+# to override that with a worker's template (chart values workerTemplate.json / existingConfigMap), and then run
+# it again after every `rke up` that changes the cluster (Kubernetes/RKE upgrade, kubelet or kube-proxy
 # extra_args/extra_binds, cluster DNS/CIDR, control plane hosts, private registries).
 #
 # Usage:
-#   scripts/update-worker-template.sh --worker ubuntu@10.0.0.20 [--values helm_vars/values.yaml]
+#   scripts/update-worker-template.sh --worker ubuntu@10.0.0.20 --out <file>.json
 #                                     [--context my-cluster] [--check] [--yes] [--ssh-opt "-p 2222"] [--no-sudo]
 #
 #   --worker   SSH target of a worker RKE manages (never a node of a node group); only read from
-#   --values   values file whose `workerTemplate.json` block is replaced (default: helm_vars/values.yaml).
-#              Only that block changes; comments and every other key stay as they are.
+#   --out      JSON file holding the template of this cluster; pass it with --set-file workerTemplate.json=<file>
+#   --values   instead of --out: a values file whose `workerTemplate.json` block is replaced in place; comments
+#              and every other key stay as they are. Pass exactly one of --out / --values.
 #   --context  also check the new template against the cluster (read only): kubelet version and control plane
 #              IPs, the same checks the provider runs at start
 #   --check    only report whether the values file is out of date; exit 1 if it is, 0 if not. Changes nothing.
@@ -20,7 +23,7 @@
 # template — replace them (delete the nodes and let cluster-autoscaler recreate them, or scale to 0 and back).
 set -euo pipefail
 
-WORKER="" VALUES="helm_vars/values.yaml" CONTEXT="" CHECK=0 YES=0 SUDO="sudo -n"
+WORKER="" VALUES="" OUT="" CONTEXT="" CHECK=0 YES=0 SUDO="sudo -n"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 
 die() { echo "ERROR: $*" >&2; exit 2; }
@@ -30,6 +33,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --worker)  WORKER="$2"; shift 2 ;;
     --values)  VALUES="$2"; shift 2 ;;
+    --out)     OUT="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
     --check)   CHECK=1; shift ;;
     --yes|-y)  YES=1; shift ;;
@@ -40,7 +44,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$WORKER" ] || usage 2
-[ -f "$VALUES" ] || die "values file not found: $VALUES"
+if [ -n "$OUT" ]; then
+  [ -z "$VALUES" ] || die "pass --out or --values, not both"
+  [ -d "$(dirname "$OUT")" ] || die "directory of --out does not exist: $(dirname "$OUT")"
+  MODE=json TARGET="$OUT"
+else
+  [ -n "$VALUES" ] || usage 2
+  [ -f "$VALUES" ] || die "values file not found: $VALUES"
+  MODE=values TARGET="$VALUES"
+fi
 command -v python3 >/dev/null || die "python3 is required"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/worker-template.XXXXXX")"
@@ -58,10 +70,11 @@ fi
 
 # exit codes of the helper: 0 = up to date, 1 = out of date (and written unless --check), 2 = error, 3 = declined
 set +e
-python3 -I - "$VALUES" "$WORK/new.json" "$WORK/nodes.json" "$CHECK" "$YES" <<'PY'
+python3 -I - "$TARGET" "$WORK/new.json" "$WORK/nodes.json" "$CHECK" "$YES" "$MODE" <<'PY'
 import json, os, re, sys
 
 values_path, new_path, nodes_path, check, yes = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1", sys.argv[5] == "1"
+json_mode = sys.argv[6] == "json"
 CONTAINERS = ["service-sidekick", "nginx-proxy", "kubelet", "kube-proxy"]
 GROUP_LABEL = "rke-autoscaler.io/nodegroup"
 
@@ -142,29 +155,36 @@ if os.path.getsize(nodes_path) if os.path.exists(nodes_path) else 0:
         fail("CP_HOSTS %s differ from the control plane nodes %s" % (cp_hosts(new), sorted(cps)))
     print("==> template matches the cluster: kubelet %s, control planes %s" % (tag, ",".join(sorted(cps))))
 
-# ---- locate workerTemplate.json in the values file (text level, to keep comments)
-lines = open(values_path).read().split("\n")
-try:
-    top = next(i for i, l in enumerate(lines) if l.rstrip() == "workerTemplate:")
-except StopIteration:
-    fail("%s has no top-level 'workerTemplate:' key" % values_path)
-end_top = next((i for i in range(top + 1, len(lines)) if lines[i] and not lines[i].startswith(" ") and not lines[i].startswith("#")), len(lines))
-jline = next((i for i in range(top + 1, end_top) if re.match(r"^  json:", lines[i])), None)
-if jline is None:
-    fail("no '  json:' under workerTemplate in %s" % values_path)
-m = re.match(r"^  json:\s*(.*)$", lines[jline])
-head = m.group(1).split(" #")[0].strip()
-if head.startswith("|") or head.startswith(">"):
-    jend = jline + 1
-    while jend < end_top and (lines[jend] == "" or lines[jend].startswith("    ")):
-        jend += 1
-    # trailing blank lines belong to what follows, not to the block
-    while jend > jline + 1 and lines[jend - 1] == "":
-        jend -= 1
-    old_text = "\n".join(l[4:] for l in lines[jline + 1:jend])
+# ---- the current template: the JSON file, or workerTemplate.json in the values file (text level, to keep comments)
+def load_values_block():
+    lines = open(values_path).read().split("\n")
+    try:
+        top = next(i for i, l in enumerate(lines) if l.rstrip() == "workerTemplate:")
+    except StopIteration:
+        fail("%s has no top-level 'workerTemplate:' key" % values_path)
+    end_top = next((i for i in range(top + 1, len(lines)) if lines[i] and not lines[i].startswith(" ") and not lines[i].startswith("#")), len(lines))
+    jline = next((i for i in range(top + 1, end_top) if re.match(r"^  json:", lines[i])), None)
+    if jline is None:
+        fail("no '  json:' under workerTemplate in %s" % values_path)
+    m = re.match(r"^  json:\s*(.*)$", lines[jline])
+    head = m.group(1).split(" #")[0].strip()
+    if head.startswith("|") or head.startswith(">"):
+        jend = jline + 1
+        while jend < end_top and (lines[jend] == "" or lines[jend].startswith("    ")):
+            jend += 1
+        # trailing blank lines belong to what follows, not to the block
+        while jend > jline + 1 and lines[jend - 1] == "":
+            jend -= 1
+        old_text = "\n".join(l[4:] for l in lines[jline + 1:jend])
+    else:
+        jend = jline + 1
+        old_text = json.loads(head) if head.startswith('"') else (head.strip("'") if head not in ("", "null", "~") else "")
+    return lines, jline, jend, old_text
+
+if json_mode:
+    old_text = open(values_path).read() if os.path.exists(values_path) else ""
 else:
-    jend = jline + 1
-    old_text = json.loads(head) if head.startswith('"') else (head.strip("'") if head not in ("", "null", "~") else "")
+    lines, jline, jend, old_text = load_values_block()
 
 # ---- what changes
 def summary(old_raw, new_cs):
@@ -228,10 +248,21 @@ if not yes:
         print("aborted")
         sys.exit(3)
 
-body = json.dumps(relevant(new_raw), indent=1).split("\n")
-block = ["  json: |"] + [("    " + l) if l else "" for l in body]
-lines[jline:jend] = block
+body = json.dumps(relevant(new_raw), indent=1)
 tmp = values_path + ".tmp"
+if json_mode:
+    # byte for byte what the values block holds (YAML "|" keeps one trailing newline): moving between the two
+    # forms does not change the ConfigMap
+    with open(tmp, "w") as f:
+        f.write(body + "\n")
+    os.chmod(tmp, os.stat(values_path).st_mode & 0o777 if os.path.exists(values_path) else 0o644)
+    os.replace(tmp, values_path)
+    if canonical(open(values_path).read()) != canonical(new_raw):
+        fail("written file does not read back to the new template")
+    print("==> written and verified: %s" % values_path)
+    sys.exit(1)
+block = ["  json: |"] + [("    " + l) if l else "" for l in body.split("\n")]
+lines[jline:jend] = block
 with open(tmp, "w") as f:
     f.write("\n".join(lines))
 os.chmod(tmp, os.stat(values_path).st_mode & 0o777)

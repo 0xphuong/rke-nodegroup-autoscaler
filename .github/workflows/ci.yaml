@@ -44,7 +44,18 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # never overwrite a pushed version: nodes cache it (pullPolicy IfNotPresent) and would run a different
+      # build than freshly pulled ones. A version built before tagging (scripts/release-image.sh) is kept.
+      - id: existing
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: point latest at the existing image
+        if: steps.existing.outputs.found == 'true'
+        run: docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:${{ steps.meta.outputs.version }}"
       - uses: docker/build-push-action@v6
+        if: steps.existing.outputs.found != 'true'
         with:
           context: .
           platforms: linux/amd64,linux/arm64

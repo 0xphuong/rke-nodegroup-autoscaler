@@ -4,6 +4,62 @@ Mọi thay đổi đáng chú ý của dự án được ghi ở đây. Định 
 version theo [SemVer](https://semver.org/). Mỗi version là một tag `vX.Y.Z`, đồng thời là `version`/`appVersion` của
 chart và tag image `docker.io/binhphuong/rke-nodegroup-autoscaler:X.Y.Z`.
 
+## [0.3.3] - 2026-11-03
+
+Tag git đầu tiên sau `v0.2.6`: mã của 0.3.1 và 0.3.2 (chỉ phát hành image, không có tag) nằm trong tag này.
+
+### Changed
+- **Worker template tự lấy từ control plane**, không còn file `worker-templates/*.json`, script hay SSH. Init
+  container `inspect-control-plane` đọc `docker inspect` của `service-sidekick`, `kubelet`, `kube-proxy` qua Docker
+  socket của master provider đang chạy (chỉ `GET /containers/<tên>/json`, chờ và thử lại khi container chưa chạy).
+  Provider bỏ taint vai trò controlplane/etcd khỏi kubelet và dựng `nginx-proxy` như RKE (image `rke-tools`, network
+  host, `CP_HOSTS` = InternalIP các node controlplane). Trên cluster thật, lệnh sinh ra trùng với lệnh từ template
+  worker, chỉ khác thứ tự tham số kubelet. Sau `rke up`: `rollout restart` provider.
+- Chart mặc định ghim provider lên control plane (`provider.nodeSelector`/`tolerations`) và báo lỗi khi bỏ
+  nodeSelector đó mà không đưa template bằng tay.
+- `workerTemplate.json` / `existingConfigMap` vẫn dùng được để ghi đè bằng template của một worker
+  (`scripts/update-worker-template.sh`). Thư mục chart `worker-templates/` bị bỏ.
+
+## [0.3.2] - 2026-10-29 (chỉ image, không có tag git)
+
+### Added
+- UCloud: tham số `CreateUHostInstance` (zone, imageId, machineType, cpu, memoryMB, bootDiskType, bootDiskSize,
+  vpcId, subnetId, secGroupIds/securityGroupId, keyPairId, chargeType, isolationGroup, businessGroup, tags,
+  minimalCpuPlatform) khai báo chung trong `ucloud:`; khối `ucloud:` của node group thành tuỳ chọn, chỉ để ghi đè.
+  `tags` được gộp, bảo mật (secGroupIds/securityGroupId) lấy nguyên cụm. Cần image mới: binary `0.3.1` dừng khi
+  gặp các trường này.
+- Chart báo lỗi khi `machineType: N` không có ngoặc kép (YAML 1.1 đọc thành `false`).
+
+## [0.3.1] - 2026-10-12 (chỉ image, không có tag git)
+
+**Không dùng image `0.3.0`**: tag đó từng bị push đè
+(hai build khác nhau, `sha256:fa55d011…` rồi `sha256:9f4be7fc…`), node đã cache bản đầu (`pullPolicy: IfNotPresent`)
+sẽ chạy binary cũ, và binary cũ dừng khi gặp các trường chung trong `vngcloud:` (`json: unknown field "flavorId"`).
+
+
+### Added
+- **UCloud (UHost)** làm cloud thứ hai, chọn bằng `cloudProvider: ucloud` (mặc định vẫn là `vngcloud`). Driver
+  `internal/cloud/ucloud` dùng `github.com/ucloud/ucloud-sdk-go` v0.22.135: tạo UHost với `UserData` (kiểm tra giới
+  hạn 16 KB), label cluster/group, `KeyPair` hoặc mật khẩu ngẫu nhiên không ai giữ, security group hoặc firewall,
+  `ChargeType` mặc định `Dynamic`. Xoá theo cách UCloud yêu cầu: power off rồi terminate (kèm disk và EIP).
+  Hướng dẫn: [docs/ucloud.md](docs/ucloud.md). **Chưa chạy với UCloud thật.**
+- Chart: khối `ucloud:` (region, projectId, apiEndpoint, credentials publicKey/privateKey), khối `ucloud:` cho
+  từng node group, `ci/test-values-ucloud.yaml`; `make chart-lint` lint cả hai cloud.
+- VNG Cloud: giá trị chung cho mọi node group trong khối `vngcloud:` (`imageId`, `flavorId`, `rootDiskTypeId`,
+  `rootDiskSize`, `securityGroups`, `sshKeyId`, `serverGroupId`, `tags`; `zoneId` đã có từ trước). Group bỏ trống
+  trường nào thì lấy giá trị chung; `tags` được gộp, trùng key thì group thắng; `securityGroups: []` trong group nghĩa
+  là không gắn SG. `networkId`/`subnetId` vẫn khai báo theo group. Values cũ (mọi thứ trong group) vẫn chạy như trước.
+- Worker template là file JSON riêng của từng cluster, không cần nhúng ~1.000 dòng vào values: chart tự đọc
+  `worker-templates/<clusterName>.json`, không có thì `worker-templates/worker-template.json`, trong thư mục chart khi
+  `workerTemplate.json` và `existingConfigMap` đều trống (không cần khai báo trong values hay helmfile). `scripts/update-worker-template.sh --out <file.json>` ghi file đó;
+  nội dung giống hệt khối trong values nên chuyển qua lại không đổi ConfigMap. `--values` vẫn dùng được.
+
+### Changed
+- Reconcile: VM đang xoá mà đã `Stopped`/lỗi thì bước xoá tiếp theo chạy ngay ở lượt sau (≤ 30 giây) thay vì chờ
+  3 phút; cần cho cloud xoá theo hai bước như UCloud.
+- Credentials của cloud được chọn theo `cloudProvider` (Secret, key và biến môi trường). Với VNG Cloud, config,
+  biến môi trường, Secret và checksum giữ nguyên như 0.2.6, nên upgrade không làm provider restart vì lý do này.
+
 ## [0.2.6] - 2026-10-09
 
 ### Added
@@ -133,6 +189,7 @@ commit của 0.2.6.
 - Preflight: kiểm tra bộ cert node, CA của cluster, template worker so với cluster thật.
 - CI: test, lint chart; khi có tag thì build image amd64/arm64 và đẩy chart OCI.
 
+[0.3.3]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.6...v0.3.3
 [0.2.6]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.3...v0.2.6
 [0.2.3]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.1...v0.2.2

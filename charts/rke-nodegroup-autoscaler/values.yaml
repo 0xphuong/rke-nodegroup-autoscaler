@@ -25,7 +25,8 @@ nodeGroups: []
 #      memory: 8Gi
 #      pods: "110"                  # mặc định 110 (max-pods của kubelet)
 #      ephemeralStorage: 50Gi       # tuỳ chọn
-#    vngcloud:                      # thông số tạo VM trên VNG Cloud (lấy từ một worker có sẵn)
+#    vngcloud:                      # thông số tạo VM trên VNG Cloud (lấy từ một worker có sẵn). Trừ networkId,
+#                                   # subnetId, mọi trường đều có thể bỏ trống để lấy giá trị chung ở vngcloud:
 #      imageId: img-...             # Ubuntu có sẵn Docker đúng version của cluster và đã pull sẵn image
 #                                   # (xem docs/vm-image.md); image trắng thì cài Docker qua initScripts
 #      flavorId: flav-...           # cấu hình CPU/RAM
@@ -38,6 +39,27 @@ nodeGroups: []
 #      serverGroupId: ""            # tuỳ chọn, server group anti-affinity (giới hạn số VM đặt được)
 #      zoneId: ""                   # tuỳ chọn, mặc định lấy vngcloud.zoneId
 #      tags: {}                     # tag thêm cho VM
+#    # Với cloudProvider: ucloud, thay khối vngcloud: ở trên bằng (tham số của CreateUHostInstance). Mọi trường
+#    # đều tuỳ chọn: bỏ trống (hoặc bỏ cả khối) thì lấy giá trị chung ở ucloud:, khai báo thì ghi đè cho group này:
+#    # ucloud:
+#    #   zone: sg-02                # image id khác nhau giữa các zone
+#    #   imageId: uimage-...        # Ubuntu có sẵn Docker và image (docs/vm-image.md), phải bật cloud-init
+#    #   machineType: O             # N, C, O, OM, ... (dòng máy UHost); "N" phải để trong ngoặc kép
+#    #   minimalCpuPlatform: ""     # tuỳ chọn, ví dụ Amd/Auto
+#    #   cpu: 4
+#    #   memoryMB: 16384            # tính bằng MB
+#    #   bootDiskType: CLOUD_RSSD   # CLOUD_SSD, CLOUD_RSSD, LOCAL_NORMAL, ...
+#    #   bootDiskSize: 40           # GB
+#    #   vpcId: uvnet-...           # cùng VPC với cluster RKE (VM phải tới được 6443 và bootstrap NodePort)
+#    #   subnetId: subnet-...
+#    #   secGroupIds: [secgroup-...]  # security group (tối đa 5, theo thứ tự ưu tiên), HOẶC
+#    #   securityGroupId: firewall-...# firewall kiểu cũ; không đặt cả hai
+#    #   keyPairId: ""              # tuỳ chọn; trống thì VM có mật khẩu ngẫu nhiên không ai giữ, SSH qua key
+#    #                              # trong bootstrap.cloudConfig
+#    #   chargeType: Dynamic        # mặc định Dynamic (theo giờ); Postpay, Month, Year
+#    #   isolationGroup: ""         # tuỳ chọn, nhóm cách ly phần cứng
+#    #   businessGroup: ""          # tuỳ chọn, "business group" (Tag) của UHost
+#    #   tags: {}                   # label thêm cho UHost
 #    # repair: {enabled: false}     # tuỳ chọn, ghi đè từng trường của repair (xem bên dưới) cho riêng group này
 
 # VM chưa thành node Ready sau khoảng này (tính từ lúc tạo) thì bị báo lỗi: cluster-autoscaler xoá VM và tạm
@@ -68,11 +90,27 @@ repair:
   retryAfter: 30m
 
 # --- Cloud --------------------------------------------------------------------------------------------------
+# Cloud chứa VM của node group: vngcloud (VNG Cloud vServer) hoặc ucloud (UCloud UHost). Mỗi release một cloud;
+# chỉ khối tương ứng bên dưới (vngcloud: hoặc ucloud:) và khối cùng tên trong từng node group được dùng.
+cloudProvider: vngcloud
+
 vngcloud:
   iamEndpoint: https://iamapis.vngcloud.vn/accounts-api   # endpoint lấy token IAM
   vserverEndpoint: ""        # endpoint vServer theo region, ví dụ https://hcm-3.api.vngcloud.vn/vserver/vserver-gateway
   projectId: ""              # project chứa VM (pro-...)
   zoneId: ""                 # zone mặc định cho VM, ví dụ HCM03-1A; node group ghi đè được
+  # Giá trị chung cho khối vngcloud: của mọi node group. Group bỏ trống trường nào (không khai báo, "" hoặc 0)
+  # thì lấy giá trị ở đây; group khai báo thì dùng của group. tags được gộp (trùng key thì group thắng).
+  # securityGroups: group không khai báo thì lấy ở đây; group ghi securityGroups: [] nghĩa là không gắn SG nào.
+  # networkId và subnetId luôn khai báo trong từng group.
+  imageId: ""                # img-...
+  flavorId: ""               # flav-...
+  rootDiskTypeId: ""         # vtype-...
+  rootDiskSize: 0            # GB
+  securityGroups: []         # [secg-...]
+  sshKeyId: ""
+  serverGroupId: ""
+  tags: {}
   credentials:
     # Service account VNG Cloud (client_id / client_secret), chỉ nên có quyền tạo/xem/xoá server trong project
     # này. Hai cách:
@@ -83,17 +121,58 @@ vngcloud:
     clientId: ""
     clientSecret: ""
 
+ucloud:
+  region: ""                 # region của VM, ví dụ sg (Singapore)
+  projectId: ""              # project (org-...), bắt buộc với tài khoản con
+  apiEndpoint: ""            # mặc định https://api.ucloud.cn (dùng cho mọi region)
+  # Giá trị chung cho khối ucloud: của mọi node group (tham số của CreateUHostInstance). Group bỏ trống trường
+  # nào (không khai báo, "" hoặc 0) thì lấy giá trị ở đây; group khai báo thì dùng của group. tags được gộp
+  # (trùng key thì group thắng). Bảo mật lấy nguyên cụm: group không khai báo cả secGroupIds lẫn securityGroupId
+  # thì lấy cả hai ở đây; group ghi secGroupIds: [] nghĩa là không gắn security group nào.
+  zone: ""                   # sg-01 hoặc sg-02; image id khác nhau giữa các zone
+  imageId: ""                # uimage-..., phải bật cloud-init (docs/vm-image.md)
+  machineType: ""            # N, C, O, OM, ...; "N" phải để trong ngoặc kép (YAML đọc N trần thành false)
+  minimalCpuPlatform: ""     # tuỳ chọn, ví dụ Amd/Auto
+  cpu: 0                     # số vCPU
+  memoryMB: 0                # MB, không phải GB
+  bootDiskType: ""           # CLOUD_SSD, CLOUD_RSSD, LOCAL_NORMAL, ...
+  bootDiskSize: 0            # GB
+  vpcId: ""                  # uvnet-..., cùng VPC với cluster RKE
+  subnetId: ""               # subnet-...
+  secGroupIds: []            # [secgroup-...], tối đa 5, HOẶC
+  securityGroupId: ""        # firewall-... (kiểu cũ); không đặt cả hai
+  keyPairId: ""              # tuỳ chọn, uhostkp-...
+  chargeType: ""             # mặc định Dynamic (theo giờ); Postpay, Month, Year
+  isolationGroup: ""
+  businessGroup: ""
+  tags: {}
+  credentials:
+    # API key (public/private key) của một tài khoản con UCloud, chỉ nên có quyền UHost: create, describe,
+    # power off, terminate. Hai cách:
+    #  a) existingSecret: tên Secret tự tạo, có key publicKey và privateKey (khuyến nghị):
+    #       kubectl -n <ns> create secret generic ucloud-credentials \
+    #         --from-literal=publicKey=... --from-literal=privateKey=...
+    #  b) publicKey + privateKey ở đây: chart tạo Secret "ucloud-credentials" (hoặc tên existingSecret nếu có
+    #     đặt). Khi đó file values này phải nằm ngoài git.
+    existingSecret: ""
+    publicKey: ""
+    privateKey: ""
+
 # --- Node mới chạy những gì ---------------------------------------------------------------------------------
-# `docker inspect` của một worker RKE đang chạy tốt (không chứa bí mật): provider lấy ra lệnh docker run của
-# service-sidekick, nginx-proxy, kubelet, kube-proxy rồi đổi hostname/IP/label cho node mới. Lấy một lần cho
-# mỗi cluster và lấy lại sau mỗi lần `rke up` làm thay đổi cluster (nâng version, đổi extra_args...):
-#   scripts/update-worker-template.sh --worker <user>@<worker-ip> --values <file values>
-# hoặc bằng tay:
-#   ssh <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet kube-proxy' > worker-template.json
-#   helm upgrade ... --set-file workerTemplate.json=worker-template.json
+# Worker template: `docker inspect` của service-sidekick, nginx-proxy, kubelet, kube-proxy mà provider biến thành
+# lệnh docker run cho node mới (đổi hostname, thêm label/taint/provider-id của group).
+# Mặc định provider TỰ LẤY từ node control plane nó đang chạy (provider.nodeSelector phải là controlplane): init
+# container inspect-control-plane đọc service-sidekick, kubelet, kube-proxy qua Docker socket của node đó; provider
+# bỏ taint vai trò controlplane/etcd khỏi kubelet và dựng nginx-proxy như RKE (image rke-tools, CP_HOSTS = IP các
+# node controlplane). Không cần file, script hay SSH. Sau `rke up` làm thay đổi cluster (nâng version, đổi
+# extra_args, thêm/bớt control plane): kubectl -n <ns> rollout restart deploy/<release>-provider
+# Chỉ đặt json hoặc existingConfigMap khi cần ghi đè bằng template lấy từ một worker:
+#   scripts/update-worker-template.sh --worker <user>@<worker-ip> --context <ctx> --values <file>
+#   hoặc: ssh -q <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet kube-proxy' > <file>
 workerTemplate:
-  json: ""
-  existingConfigMap: ""      # hoặc: tên ConfigMap có sẵn với key worker-template.json (khi đó bỏ trống json)
+  json: ""                   # docker inspect của một worker (--set-file workerTemplate.json=<file>)
+  existingConfigMap: ""      # hoặc: tên ConfigMap có sẵn với key worker-template.json
+  dockerSocket: /var/run/docker.sock   # Docker socket của node control plane (chỉ init container mount)
 
 # Bộ cert node của RKE1 (kube-ca, kube-node, kube-proxy và 2 kubeconfig), dùng chung cho mọi node của cluster và
 # được gửi cho VM mới qua bootstrap. Chọn MỘT trong ba nguồn:
@@ -160,13 +239,13 @@ provider:
     limits: {memory: 256Mi}
   priorityClassName: system-cluster-critical
   # Pod của chart không bao giờ chạy trên node mà autoscaler có thể xoá (chart luôn thêm nodeAffinity chặn node
-  # có label rke-autoscaler.io/nodegroup). Nên ghim lên control plane:
-  #   nodeSelector: {node-role.kubernetes.io/controlplane: "true"}
-  #   tolerations:
-  #     - {key: node-role.kubernetes.io/controlplane, operator: Exists, effect: NoSchedule}
-  #     - {key: node-role.kubernetes.io/etcd, operator: Exists, effect: NoExecute}
-  nodeSelector: {}
-  tolerations: []
+  # có label rke-autoscaler.io/nodegroup). Provider chạy trên control plane: worker template mặc định được đọc từ
+  # chính node đó (xem workerTemplate). Chỉ bỏ nodeSelector này khi dùng workerTemplate.json / existingConfigMap.
+  nodeSelector:
+    node-role.kubernetes.io/controlplane: "true"
+  tolerations:
+    - {key: node-role.kubernetes.io/controlplane, operator: Exists, effect: NoSchedule}
+    - {key: node-role.kubernetes.io/etcd, operator: Exists, effect: NoExecute}
   # affinity bổ sung (podAffinity / podAntiAffinity). Không đặt nodeAffinity ở đây: chart đã dùng khoá đó
   extraAffinity: {}
 

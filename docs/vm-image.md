@@ -19,7 +19,8 @@ thành image → đặt `imageId` của node group trỏ vào image đó.
 | Thêm hoặc đổi DaemonSet chạy trên mọi node | Nên làm lại image (không bắt buộc, kubelet vẫn tự pull) |
 | Chỉ đổi ứng dụng, Deployment | Không cần |
 
-Sau khi upgrade cluster, nhớ cập nhật cả `workerTemplate` (`scripts/update-worker-template.sh`).
+Sau khi upgrade cluster, restart provider để đọc lại worker template từ master
+(`kubectl -n <ns> rollout restart deploy/<release>-provider`).
 
 ## 1. Dựng VM builder
 

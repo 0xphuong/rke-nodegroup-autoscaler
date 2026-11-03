@@ -31,6 +31,8 @@ type fakeCloud struct {
 	deletes  []string
 	gets     int
 	failNext error
+	// powerOffFirst: Delete stops a VM and asks to be called again, like UCloud (terminate needs Stopped)
+	powerOffFirst bool
 }
 
 func newFakeCloud() *fakeCloud {
@@ -68,6 +70,10 @@ func (f *fakeCloud) Get(_ context.Context, id string) (cloud.Instance, error) {
 func (f *fakeCloud) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if in, ok := f.vms[id]; ok && f.powerOffFirst && in.Phase != cloud.PhaseStopped {
+		in.Phase = cloud.PhaseStopped
+		return cloud.ErrRetryLater
+	}
 	f.deletes = append(f.deletes, id)
 	delete(f.vms, id) // the fake deletes instantly
 	return nil

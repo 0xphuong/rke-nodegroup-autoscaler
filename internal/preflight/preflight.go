@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -79,6 +80,32 @@ func ClusterCA(b bootstrap.Bundle, saCAPath string) error {
 	return errors.New("kube-ca.pem of the node certificate Secret is not this cluster's CA — certificates copied from another cluster?")
 }
 
+// ControlPlaneIPs returns the InternalIP of every node with RKE's controlplane role: what RKE puts in
+// nginx-proxy's CP_HOSTS.
+func ControlPlaneIPs(ctx context.Context, kube kubernetes.Interface) ([]string, error) {
+	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/controlplane=true"})
+	if err != nil {
+		return nil, err
+	}
+	var cps []string
+	for _, n := range nodes.Items {
+		cps = append(cps, controlPlaneIPs(n)...)
+	}
+	return cps, nil
+}
+
+func controlPlaneIPs(n corev1.Node) []string {
+	var ips []string
+	if n.Labels["node-role.kubernetes.io/controlplane"] == "true" {
+		for _, a := range n.Status.Addresses {
+			if a.Type == corev1.NodeInternalIP {
+				ips = append(ips, a.Address)
+			}
+		}
+	}
+	return ips
+}
+
 // Template checks that the worker template still matches the cluster: same Kubernetes version as the nodes,
 // same control plane addresses as nginx-proxy's CP_HOSTS. Both change with `rke up` (upgrade, control plane
 // added or removed), after which the template has to be taken again.
@@ -91,13 +118,7 @@ func Template(ctx context.Context, kube kubernetes.Interface, tmpl *workerplane.
 	var cps []string
 	for _, n := range nodes.Items {
 		versions[n.Status.NodeInfo.KubeletVersion] = true
-		if n.Labels["node-role.kubernetes.io/controlplane"] == "true" {
-			for _, a := range n.Status.Addresses {
-				if a.Type == "InternalIP" {
-					cps = append(cps, a.Address)
-				}
-			}
-		}
+		cps = append(cps, controlPlaneIPs(n)...)
 	}
 	tag := tmpl.KubeletImage()
 	if i := strings.LastIndex(tag, ":"); i >= 0 {

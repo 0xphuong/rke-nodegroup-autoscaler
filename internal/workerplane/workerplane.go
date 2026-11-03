@@ -186,7 +186,9 @@ func (t *Template) Commands(n Node) ([]string, error) {
 	for _, name := range Containers {
 		c := cs[name]
 		for _, tok := range append(c.tokens(), c.Config.Env...) {
-			if nameRe.MatchString(tok) || (t.templateIP != "" && ipRe.MatchString(tok)) {
+			// a template taken from a control plane node legitimately has its address in CP_HOSTS
+			cpHosts := strings.HasPrefix(tok, "CP_HOSTS=")
+			if nameRe.MatchString(tok) || (t.templateIP != "" && !cpHosts && ipRe.MatchString(tok)) {
 				return nil, fmt.Errorf("%s still references the template node after rewriting: %q", name, tok)
 			}
 		}

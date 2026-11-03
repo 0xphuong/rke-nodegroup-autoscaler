@@ -188,10 +188,13 @@ func (p *Provider) reconcileRecord(ctx context.Context, r state.Record, v *view)
 
 	case state.Deleting:
 		if r.ID != "" {
-			_, err := p.Driver.Get(ctx, r.ID)
+			inst, err := p.Driver.Get(ctx, r.ID)
 			switch {
 			case err == nil:
-				if r.DeletingAt != nil && now.Sub(*r.DeletingAt) > deleteRetryAfter {
+				// a stopped or failed VM is ready for the next delete step right away (UCloud powers off
+				// first and terminates once Stopped); anything else is retried after deleteRetryAfter
+				ready := inst.Phase == cloud.PhaseStopped || inst.Phase == cloud.PhaseError
+				if ready || (r.DeletingAt != nil && now.Sub(*r.DeletingAt) > deleteRetryAfter) {
 					if derr := p.Driver.Delete(ctx, r.ID); derr != nil && !errors.Is(derr, cloud.ErrRetryLater) {
 						return derr
 					}

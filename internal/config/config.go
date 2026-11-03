@@ -76,6 +76,7 @@ func (r Repair) merge(o *Repair) Repair {
 type Cloud struct {
 	Provider string    `json:"provider"`
 	VNGCloud *VNGCloud `json:"vngcloud,omitempty"`
+	UCloud   *UCloud   `json:"ucloud,omitempty"`
 }
 
 // VNGCloud holds account-level settings. Credentials come from the environment (VNGCLOUD_CLIENT_ID /
@@ -85,6 +86,32 @@ type VNGCloud struct {
 	VServerEndpoint string `json:"vserverEndpoint"`
 	ProjectID       string `json:"projectId"`
 	ZoneID          string `json:"zoneId,omitempty"`
+
+	// Defaults for every node group: a group's vngcloud block takes each of these it leaves unset (empty
+	// string, 0, or securityGroups absent). Tags are merged, the group's value winning on the same key.
+	ImageID        string            `json:"imageId,omitempty"`
+	FlavorID       string            `json:"flavorId,omitempty"`
+	RootDiskTypeID string            `json:"rootDiskTypeId,omitempty"`
+	RootDiskSize   int               `json:"rootDiskSize,omitempty"`
+	SecurityGroups []string          `json:"securityGroups,omitempty"`
+	SSHKeyID       string            `json:"sshKeyId,omitempty"`
+	ServerGroupID  string            `json:"serverGroupId,omitempty"`
+	Tags           map[string]string `json:"tags,omitempty"`
+}
+
+// UCloud holds account-level settings. Credentials come from the environment (UCLOUD_PUBLIC_KEY /
+// UCLOUD_PRIVATE_KEY), never from this file.
+type UCloud struct {
+	// Region, e.g. sg (Singapore).
+	Region string `json:"region"`
+	// ProjectID, e.g. org-xxxx; required for sub-accounts.
+	ProjectID string `json:"projectId,omitempty"`
+	// APIEndpoint defaults to https://api.ucloud.cn, which serves every region.
+	APIEndpoint string `json:"apiEndpoint,omitempty"`
+
+	// Defaults for every node group: a group's ucloud block takes each field it leaves unset (empty string,
+	// 0, or the security fields absent). Tags are merged, the group's value winning on the same key.
+	UCloudServer
 }
 
 type Bootstrap struct {
@@ -111,6 +138,7 @@ type NodeGroup struct {
 	// group has no node yet (scale from zero). Keep them equal to what the flavor really gives a node.
 	Resources Resources       `json:"resources"`
 	VNGCloud  *VNGCloudServer `json:"vngcloud,omitempty"`
+	UCloud    *UCloudServer   `json:"ucloud,omitempty"`
 	// Repair overrides fields of the top-level repair settings for this group.
 	Repair *Repair `json:"repair,omitempty"`
 }
@@ -134,6 +162,37 @@ type VNGCloudServer struct {
 	ServerGroupID  string            `json:"serverGroupId,omitempty"`
 	ZoneID         string            `json:"zoneId,omitempty"`
 	Tags           map[string]string `json:"tags,omitempty"`
+}
+
+// UCloudServer describes the UHost of a node group (CreateUHostInstance parameters).
+type UCloudServer struct {
+	// Zone, e.g. sg-01. Image ids are per zone.
+	Zone    string `json:"zone"`
+	ImageID string `json:"imageId"`
+	// MachineType N, C, O, OM, ... with CPU cores and memory in MB, e.g. O / 4 / 16384.
+	MachineType string `json:"machineType"`
+	// MinimalCPUPlatform, e.g. Intel/Auto or Amd/Auto (optional).
+	MinimalCPUPlatform string `json:"minimalCpuPlatform,omitempty"`
+	CPU                int    `json:"cpu"`
+	MemoryMB           int    `json:"memoryMB"`
+	// BootDiskType CLOUD_SSD, CLOUD_RSSD, LOCAL_NORMAL, ...; size in GB.
+	BootDiskType string `json:"bootDiskType"`
+	BootDiskSize int    `json:"bootDiskSize"`
+	VPCID        string `json:"vpcId"`
+	SubnetID     string `json:"subnetId"`
+	// Either SecurityGroupID (a firewall, "Firewall" security mode) or SecGroupIDs (up to 5 security groups,
+	// "SecGroup" mode, in priority order).
+	SecurityGroupID string   `json:"securityGroupId,omitempty"`
+	SecGroupIDs     []string `json:"secGroupIds,omitempty"`
+	// KeyPairID: log in with this key pair. Without it the host gets a random password nobody keeps; reach it
+	// through the SSH keys of bootstrap.cloudConfig.
+	KeyPairID string `json:"keyPairId,omitempty"`
+	// ChargeType defaults to Dynamic (hourly): node group hosts live for hours, not months.
+	ChargeType     string `json:"chargeType,omitempty"`
+	IsolationGroup string `json:"isolationGroup,omitempty"`
+	// BusinessGroup is the UHost "Tag" (business group), Default if empty.
+	BusinessGroup string            `json:"businessGroup,omitempty"`
+	Tags          map[string]string `json:"tags,omitempty"`
 }
 
 var (
@@ -185,7 +244,91 @@ func (c *Config) applyDefaults() {
 		if g.Resources.Pods.IsZero() {
 			g.Resources.Pods = resource.MustParse("110")
 		}
+		if v := c.Cloud.VNGCloud; c.Cloud.Provider == "vngcloud" && v != nil {
+			if g.VNGCloud == nil {
+				g.VNGCloud = &VNGCloudServer{}
+			}
+			g.VNGCloud.inherit(v)
+		}
+		if u := c.Cloud.UCloud; c.Cloud.Provider == "ucloud" && u != nil {
+			if g.UCloud == nil {
+				g.UCloud = &UCloudServer{}
+			}
+			g.UCloud.inherit(&u.UCloudServer)
+		}
 	}
+}
+
+// inherit fills the fields a group left unset from the cloud-level defaults. An explicit empty
+// securityGroups list ([]) is kept: it means no security group, not "use the default".
+func (s *VNGCloudServer) inherit(d *VNGCloud) {
+	str := func(f *string, def string) {
+		if *f == "" {
+			*f = def
+		}
+	}
+	str(&s.ImageID, d.ImageID)
+	str(&s.FlavorID, d.FlavorID)
+	str(&s.RootDiskTypeID, d.RootDiskTypeID)
+	str(&s.SSHKeyID, d.SSHKeyID)
+	str(&s.ServerGroupID, d.ServerGroupID)
+	str(&s.ZoneID, d.ZoneID)
+	if s.RootDiskSize == 0 {
+		s.RootDiskSize = d.RootDiskSize
+	}
+	if s.SecurityGroups == nil {
+		s.SecurityGroups = d.SecurityGroups
+	}
+	s.Tags = mergeTags(d.Tags, s.Tags)
+}
+
+// inherit fills the fields a group left unset from the cloud-level defaults. The security setting is taken
+// as a whole, and only when the group sets neither securityGroupId nor secGroupIds: mixing a firewall from
+// one level with security groups from the other would be rejected. An explicit secGroupIds: [] is kept.
+func (s *UCloudServer) inherit(d *UCloudServer) {
+	str := func(f *string, def string) {
+		if *f == "" {
+			*f = def
+		}
+	}
+	num := func(f *int, def int) {
+		if *f == 0 {
+			*f = def
+		}
+	}
+	str(&s.Zone, d.Zone)
+	str(&s.ImageID, d.ImageID)
+	str(&s.MachineType, d.MachineType)
+	str(&s.MinimalCPUPlatform, d.MinimalCPUPlatform)
+	num(&s.CPU, d.CPU)
+	num(&s.MemoryMB, d.MemoryMB)
+	str(&s.BootDiskType, d.BootDiskType)
+	num(&s.BootDiskSize, d.BootDiskSize)
+	str(&s.VPCID, d.VPCID)
+	str(&s.SubnetID, d.SubnetID)
+	if s.SecurityGroupID == "" && s.SecGroupIDs == nil {
+		s.SecurityGroupID, s.SecGroupIDs = d.SecurityGroupID, d.SecGroupIDs
+	}
+	str(&s.KeyPairID, d.KeyPairID)
+	str(&s.ChargeType, d.ChargeType)
+	str(&s.IsolationGroup, d.IsolationGroup)
+	str(&s.BusinessGroup, d.BusinessGroup)
+	s.Tags = mergeTags(d.Tags, s.Tags)
+}
+
+// mergeTags returns the defaults overlaid with the group's tags, in a new map when there are defaults.
+func mergeTags(defaults, group map[string]string) map[string]string {
+	if len(defaults) == 0 {
+		return group
+	}
+	tags := make(map[string]string, len(defaults)+len(group))
+	for k, v := range defaults {
+		tags[k] = v
+	}
+	for k, v := range group {
+		tags[k] = v
+	}
+	return tags
 }
 
 func (c *Config) Validate() error {
@@ -201,8 +344,12 @@ func (c *Config) Validate() error {
 		if v == nil || v.IAMEndpoint == "" || v.VServerEndpoint == "" || v.ProjectID == "" {
 			add("cloud.vngcloud needs iamEndpoint, vserverEndpoint and projectId")
 		}
+	case "ucloud":
+		if u := c.Cloud.UCloud; u == nil || u.Region == "" {
+			add("cloud.ucloud needs region")
+		}
 	default:
-		add("cloud.provider %q is not supported (supported: vngcloud)", c.Cloud.Provider)
+		add("cloud.provider %q is not supported (supported: vngcloud, ucloud)", c.Cloud.Provider)
 	}
 	if len(c.Bootstrap.Endpoints) == 0 {
 		add("bootstrap.endpoints must list at least one URL reachable from new VMs")
@@ -266,8 +413,11 @@ func (c *Config) Validate() error {
 			s := g.VNGCloud
 			if s == nil || s.ImageID == "" || s.FlavorID == "" || s.RootDiskTypeID == "" || s.RootDiskSize == 0 ||
 				s.NetworkID == "" || s.SubnetID == "" {
-				add("node group %s: vngcloud needs imageId, flavorId, rootDiskTypeId, rootDiskSize, networkId, subnetId", g.Name)
+				add("node group %s: vngcloud needs imageId, flavorId, rootDiskTypeId, rootDiskSize (in the group or in cloud.vngcloud), networkId, subnetId", g.Name)
 			}
+		}
+		if c.Cloud.Provider == "ucloud" {
+			validateUCloudServer(g.Name, g.UCloud, add)
 		}
 	}
 	if len(errs) > 0 {
@@ -286,4 +436,26 @@ func (c *Config) Group(name string) (NodeGroup, bool) {
 		}
 	}
 	return NodeGroup{}, false
+}
+
+var ucloudChargeTypes = map[string]bool{"": true, "Dynamic": true, "Postpay": true, "Month": true, "Year": true}
+
+func validateUCloudServer(group string, s *UCloudServer, add func(string, ...any)) {
+	if s == nil || s.Zone == "" || s.ImageID == "" || s.MachineType == "" || s.CPU <= 0 || s.MemoryMB <= 0 ||
+		s.BootDiskType == "" || s.BootDiskSize <= 0 || s.VPCID == "" || s.SubnetID == "" {
+		add("node group %s: ucloud needs zone, imageId, machineType, cpu, memoryMB, bootDiskType, bootDiskSize, vpcId, subnetId (in the group or in cloud.ucloud)", group)
+		return
+	}
+	if s.SecurityGroupID != "" && len(s.SecGroupIDs) > 0 {
+		add("node group %s: ucloud takes securityGroupId (firewall) or secGroupIds (security groups), not both", group)
+	}
+	if len(s.SecGroupIDs) > 5 {
+		add("node group %s: ucloud secGroupIds takes at most 5 security groups", group)
+	}
+	if !ucloudChargeTypes[s.ChargeType] {
+		add("node group %s: ucloud chargeType %q must be Dynamic, Postpay, Month or Year", group, s.ChargeType)
+	}
+	if s.MemoryMB < 1024 {
+		add("node group %s: ucloud memoryMB is in MB (e.g. 16384), got %d", group, s.MemoryMB)
+	}
 }

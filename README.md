@@ -1,12 +1,13 @@
 # rke-nodegroup-autoscaler
 
 Managed Node Group + [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler)
-cho cluster **RKE1** chạy trên **VNG Cloud**, không cần `rke up` khi scale.
+cho cluster **RKE1** chạy trên **VNG Cloud** (vServer) hoặc **UCloud** (UHost), không cần `rke up` khi scale.
+Chọn cloud bằng `cloudProvider` trong values; riêng UCloud xem [docs/ucloud.md](docs/ucloud.md).
 
 ```
 Tải tăng → HPA thêm Pod → Pod Pending
         → cluster-autoscaler (cloudProvider=externalgrpc) ──gRPC/mTLS──> nodegroup-provider
-        → VNG Cloud API tạo VM (user_data chỉ chứa token dùng một lần)
+        → API của cloud (VNG Cloud / UCloud) tạo VM (user_data chỉ chứa token dùng một lần)
         → VM lấy join script qua HTTPS (NodePort trên node có sẵn) → chạy worker plane của RKE
         → kubelet đăng ký node (label + taint + providerID) → Pod được schedule
 
@@ -75,28 +76,28 @@ Yêu cầu:
   - đi ra port 6443 của control plane;
   - đi ra NodePort bootstrap (mặc định 31443) trên các node trong `bootstrap.nodeIPs`;
   - các port worker của RKE và CNI, giống các worker hiện có.
-- Một **service account VNG Cloud** chỉ có quyền tạo và xoá server trong project.
+- Một **tài khoản con của cloud** chỉ có quyền tạo, xem và xoá server: service account (client_id/secret) với VNG
+  Cloud, API key (public/private key) chỉ có quyền UHost với UCloud.
 
 ```bash
 NS=kube-system
 
-# 1. credentials VNG Cloud
+# 1. credentials của cloud
 kubectl -n $NS create secret generic vngcloud-credentials \
   --from-literal=clientId=... --from-literal=clientSecret=...
+#    (UCloud: secret ucloud-credentials với publicKey/privateKey, và cloudProvider: ucloud; xem docs/ucloud.md)
 
 # 2. cert node RKE: không cần làm gì. Với nodeCerts.hostPath=/etc/kubernetes/ssl và provider ghim lên master,
 #    provider đọc thẳng 7 file cert từ node (mount từng file, không bao giờ thấy kube-ca-key.pem).
 #    Sau `rke cert rotate`: kubectl -n $NS rollout restart deploy/<release>-provider
 #    (Cách khác: Secret nodeCerts.existingSecret hoặc nodeCerts.files, xem values.yaml.)
 
-# 3. template worker (không chứa bí mật)
-ssh <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet kube-proxy' > worker-template.local.json
+# 3. template worker: không cần làm gì. Provider (ghim lên master, mặc định của chart) tự đọc kubelet,
+#    kube-proxy, service-sidekick của master đó và dựng nginx-proxy (xem "Worker template" bên dưới).
 
-# 4. values: xem charts/rke-nodegroup-autoscaler/values.yaml, ví dụ đầy đủ ở ci/test-values.yaml
+# 4. values: xem charts/rke-nodegroup-autoscaler/values.yaml, ví dụ đầy đủ ở ci/test-values-ucloud.yaml
 helm upgrade --install ngas charts/rke-nodegroup-autoscaler -n $NS \
-  -f values-dev.local.yaml --set-file workerTemplate.json=worker-template.local.json \
-  --set nodeCerts.hostPath=/etc/kubernetes/ssl \
-  --set-json 'provider.nodeSelector={"node-role.kubernetes.io/controlplane":"true"}' 
+  -f values-dev.local.yaml --set nodeCerts.hostPath=/etc/kubernetes/ssl
 ```
 
 Provider **kiểm tra trước khi chạy** (`internal/preflight`) và từ chối khởi động nếu có điểm lệch:
@@ -120,17 +121,40 @@ ghi cảnh báo vào log.
 của provider chạy cuối. Chart giữ các file này trong Secret (không dùng ConfigMap). Tuy vậy nội dung vẫn nằm trong
 `user_data` của VM, nơi console cloud và metadata API đều đọc được, nên **đừng để mật khẩu trong đó**.
 
-**Sau mỗi lần `rke up` làm thay đổi cluster** (upgrade k8s, đổi tham số kubelet, đổi control plane): lấy lại
-template worker và chạy `helm upgrade`. Script `scripts/update-worker-template.sh` làm việc này:
+### Worker template
+
+Provider cần lệnh `docker run` của `service-sidekick`, `nginx-proxy`, `kubelet`, `kube-proxy` mà RKE chạy trên một
+worker, để chạy y hệt trên node mới (chỉ đổi hostname, thêm label/taint/`--provider-id` của group).
+
+**Mặc định provider tự lấy từ node control plane nó đang chạy**, không cần file, script hay SSH:
+- init container `inspect-control-plane` đọc `docker inspect` của `service-sidekick`, `kubelet`, `kube-proxy` qua
+  Docker socket của master (chỉ init container mount socket, chỉ gọi `GET /containers/<tên>/json`; provider không
+  thấy socket). Container nào chưa chạy (ví dụ đang `rke up`) thì init container chờ và thử lại;
+- kubelet của master khác kubelet của worker đúng ở taint vai trò (`--register-with-taints=node-role.kubernetes.io/
+  controlplane...`/`etcd...`): provider bỏ đi, giữ taint của group;
+- master không chạy `nginx-proxy`: provider dựng như RKE (`cluster/plan.go` `BuildProxyProcess`): image `rke-tools`
+  của `service-sidekick`, network host, `CP_HOSTS` = InternalIP các node có label
+  `node-role.kubernetes.io/controlplane=true`.
+
+Chart vì thế mặc định ghim provider lên control plane (`provider.nodeSelector`) và báo lỗi nếu bỏ nodeSelector đó
+mà không đưa template bằng tay.
+
+**Sau mỗi lần `rke up` làm thay đổi cluster** (upgrade k8s, đổi tham số kubelet, thêm/bớt control plane): restart
+provider để đọc lại.
 
 ```bash
-# chỉ kiểm tra: exit 1 nếu values đã lỗi thời so với worker thật
-scripts/update-worker-template.sh --worker <user>@<worker RKE> --values helm_vars/values.yaml --context <ctx> --check
-# cập nhật: in thay đổi, hỏi xác nhận, chỉ thay block workerTemplate.json (giữ comment và các key khác)
-scripts/update-worker-template.sh --worker <user>@<worker RKE> --values helm_vars/values.yaml --context <ctx>
+kubectl -n $NS rollout restart deploy/<release>-provider
+kubectl -n $NS logs deploy/<release>-provider | grep -m1 'nodegroup-provider started'   # kubeletImage, cpHosts
 ```
 
-Script chỉ lưu các trường provider dùng, nên khi container restart thì không bị báo là thay đổi. RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
+**Ghi đè bằng template của một worker** (ví dụ provider không chạy được trên master): đặt `workerTemplate.json`
+(`--set-file workerTemplate.json=<file>`) hoặc `workerTemplate.existingConfigMap`. Khi đó phải tự lấy lại template sau
+mỗi `rke up`, bằng `scripts/update-worker-template.sh --worker <user>@<worker RKE> --out <file> --context <ctx>`
+(thêm `--check` để chỉ kiểm tra) hoặc `ssh -q <worker> 'sudo docker inspect service-sidekick nginx-proxy kubelet
+kube-proxy' > <file>`. Template giống nhau giữa các worker của **một** cluster nhưng khác giữa các cluster, không
+dùng chung file; nhầm file thì preflight từ chối (so `CP_HOSTS` và version kubelet).
+
+RKE không biết các node của node group nên sẽ không upgrade chúng. Provider
 cũng từ chối template có `generate_serving_certificate`, vì khi đó mỗi node cần cert riêng.
 
 ### Công cụ triển khai được hỗ trợ
@@ -178,7 +202,7 @@ Gỡ lỗi trên VM: `/var/log/rke-nodegroup-bootstrap.log`, `docker logs kubele
 
 ## Hành vi cần biết
 
-- **SDK VNG Cloud không có API liệt kê server.** Provider tự ghi lại mọi VM nó tạo vào ConfigMap
+- **Provider không liệt kê server của cloud** (SDK VNG Cloud không có API này). Provider tự ghi lại mọi VM nó tạo vào ConfigMap
   `<release>-provider-state`, và chỉ đụng tới VM có trong đó. Vì có một writer duy nhất nên Deployment chạy
   1 replica với strategy `Recreate`.
 - **VM không thành node `Ready` sau `maxProvisionTime`** thì bị báo là lỗi. Cluster Autoscaler sẽ xoá VM đó và
@@ -232,5 +256,8 @@ PoC. Phần đã kiểm chứng:
 - build image `linux/amd64` chạy được;
 - `preflight.Template` qua khi chạy với một cluster RKE 1.32.6 thật, bằng template lấy từ worker của chính cluster đó.
 
-**Chưa chạy với VNG Cloud thật hay trên cluster thật.** Tên trạng thái server của vServer (`ACTIVE`, `ERROR`...),
-giới hạn tên và tag VM là suy ra từ SDK. Cần một vòng test trên môi trường dev trước khi dùng thật.
+**VNG Cloud:** đã chạy thật trên một cluster RKE 1.32.6 (scale up/down, scale từ 0, node repair khi VM bị stop,
+bị xoá hoặc kubelet chết, cert node đọc từ master).
+
+**UCloud:** driver (`internal/cloud/ucloud`) mới có unit test với API giả lập (tham số `CreateUHostInstance`, ánh
+xạ trạng thái UHost, luồng xoá power off rồi terminate). **Chưa chạy với UCloud thật.**
