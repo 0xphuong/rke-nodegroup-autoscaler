@@ -212,6 +212,9 @@ Gỡ lỗi trên VM: `/var/log/rke-nodegroup-bootstrap.log`, `docker logs kubele
   `minSize`/`maxSize` và không bị backoff của Cluster Autoscaler. VM còn chạy thì tạo node mới trước rồi mới xoá
   node cũ; VM đã chết thì xoá và tạo song song. Có cầu chì chặn sửa hàng loạt khi nhiều node cùng hỏng. Chi tiết
   các trường hợp và thời gian: [docs/node-repair.md](docs/node-repair.md).
+- **Đổi cấu hình máy của group (rollout):** đổi flavor/machineType, image, disk hay network của group thì provider
+  thay dần node cũ, từng node một: tạo node mới, node mới Ready thì drain (evict, tôn trọng PodDisruptionBudget) rồi
+  xoá node cũ. Chi tiết: [docs/rollout.md](docs/rollout.md).
 - **Image VM dựng sẵn** (Docker, image đã pull): [docs/vm-image.md](docs/vm-image.md).
 - **Node có label của group nhưng VM đã mất** và không có trong state thì bị xoá. Nếu VM vẫn còn, provider chỉ
   ghi log cảnh báo, không tự nhận VM đó về quản lý.

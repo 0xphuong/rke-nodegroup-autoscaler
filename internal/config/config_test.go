@@ -254,3 +254,43 @@ nodeGroups:
 		t.Fatalf("want imageId error, got %v", err)
 	}
 }
+
+func TestSpecHash(t *testing.T) {
+	base := func() NodeGroup {
+		return NodeGroup{UCloud: &UCloudServer{Zone: "sg-02", ImageID: "uimage-1", MachineType: "O", CPU: 2, MemoryMB: 8192,
+			SubnetID: "subnet-1", SecurityGroupID: "firewall-1", ChargeType: "Dynamic", Tags: map[string]string{"a": "b"}}}
+	}
+	h := base().SpecHash()
+	same := []func(*NodeGroup){
+		func(g *NodeGroup) { g.UCloud.Tags = map[string]string{"c": "d"} },
+		func(g *NodeGroup) { g.UCloud.ChargeType = "Month" },
+		func(g *NodeGroup) { g.UCloud.BusinessGroup = "x" },
+		func(g *NodeGroup) { g.UCloud.SecGroupIDs = []string{} },
+		func(g *NodeGroup) { g.Labels = map[string]string{"x": "y"} },
+	}
+	for i, f := range same {
+		g := base()
+		f(&g)
+		if g.SpecHash() != h {
+			t.Errorf("change %d must not change the machine spec", i)
+		}
+	}
+	changed := []func(*NodeGroup){
+		func(g *NodeGroup) { g.UCloud.MemoryMB = 16384 },
+		func(g *NodeGroup) { g.UCloud.ImageID = "uimage-2" },
+		func(g *NodeGroup) { g.UCloud.SubnetID = "subnet-2" },
+		func(g *NodeGroup) { g.UCloud.BootDiskSize = 40 },
+	}
+	for i, f := range changed {
+		g := base()
+		f(&g)
+		if g.SpecHash() == h {
+			t.Errorf("change %d must change the machine spec", i)
+		}
+	}
+	v1 := NodeGroup{VNGCloud: &VNGCloudServer{FlavorID: "flv-2x8", ImageID: "img"}}
+	v2 := NodeGroup{VNGCloud: &VNGCloudServer{FlavorID: "flv-2x16", ImageID: "img"}}
+	if v1.SpecHash() == v2.SpecHash() {
+		t.Error("vngcloud flavorId must change the machine spec")
+	}
+}

@@ -51,6 +51,8 @@ type Provider struct {
 
 	// scaling operations on the same provider are serialized; they are rare and each is short
 	mu sync.Mutex
+	// drainWarned: when a blocked drain was last reported, by instance name (keeps the log quiet)
+	drainWarned map[string]time.Time
 }
 
 // ---- node groups -------------------------------------------------------------------------------------------
@@ -130,7 +132,7 @@ func (p *Provider) createOne(ctx context.Context, g config.NodeGroup, name, repl
 	now := p.Now()
 	// recorded before the cloud call: if we crash in between, reconcile finds a record without ID and drops it
 	rec := state.Record{
-		Name: name, Group: g.Name, Phase: state.Creating, CreatedAt: now, Replaces: replaces,
+		Name: name, Group: g.Name, Phase: state.Creating, CreatedAt: now, Replaces: replaces, Spec: g.SpecHash(),
 		TokenHash: hash, TokenExpiry: now.Add(p.Config.Bootstrap.TokenTTL.Duration),
 	}
 	if err := p.Store.Put(ctx, rec); err != nil {

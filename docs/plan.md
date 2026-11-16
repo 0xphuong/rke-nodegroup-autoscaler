@@ -15,15 +15,13 @@ Từ 0.3.3 provider đọc worker template từ control plane **một lần lúc
 - Đổi `extra_args` mà không đổi version thì API không thấy. Cân nhắc lưu hash của `docker inspect` lúc khởi động
   và so lại bằng một CronJob ngắn hoặc lúc mỗi lần tạo node.
 
-## 2. Thay dần node cũ khi template đổi
+## 2. Thay dần node cũ khi worker template đổi
 
-RKE không cập nhật node của node group. Sau upgrade k8s hay đổi control plane, các node đang chạy giữ kubelet cũ
-và `nginx-proxy` với `CP_HOSTS` cũ.
+Đã làm ở 0.4.0 cho **cấu hình máy** (flavor, image, disk, network; `docs/rollout.md`). Còn lại:
 
-- Ghi phiên bản template (hash) vào annotation của node lúc tạo.
-- Khi template đổi: lần lượt cordon, drain, xoá từng node có hash cũ; group tạo node mới. Tôn trọng PDB, giới
-  hạn số node thay cùng lúc (`maxUnavailable`), dừng khi node mới không Ready (giống cầu chì của repair).
-- Cho tắt/bật theo group.
+- Đưa worker template (version kubelet, `CP_HOSTS`) vào hash: sau upgrade k8s hay đổi control plane, node đang chạy
+  giữ kubelet cũ và `nginx-proxy` với `CP_HOSTS` cũ. Cần quyết định có tính labels/taints của group không.
+- Timeout cho drain bị PDB chặn (hiện chờ mãi, chỉ log cảnh báo mỗi 10 phút).
 
 ## 3. Preflight cho chế độ control plane
 

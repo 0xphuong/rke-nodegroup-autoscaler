@@ -61,6 +61,7 @@ nodeGroups: []
 #    #   businessGroup: ""          # tuỳ chọn, "business group" (Tag) của UHost
 #    #   tags: {}                   # label thêm cho UHost
 #    # repair: {enabled: false}     # tuỳ chọn, ghi đè từng trường của repair (xem bên dưới) cho riêng group này
+#    # rollout: {enabled: false}    # tuỳ chọn, bật/tắt rollout (xem bên dưới) cho riêng group này
 
 # VM chưa thành node Ready sau khoảng này (tính từ lúc tạo) thì bị báo lỗi: cluster-autoscaler xoá VM và tạm
 # ngưng scale group đó (backoff 5 → 30 phút). Cũng được truyền cho cluster-autoscaler làm
@@ -88,6 +89,16 @@ repair:
   maxUnhealthyPercent: 20
   # node thay thế không join được thì giữ node cũ và chờ chừng này mới thử thay lại
   retryAfter: 30m
+
+# --- Rollout --------------------------------------------------------------------------------------------------
+# Đổi cấu hình máy của group (khối vngcloud:/ucloud: sau khi gộp giá trị chung: flavorId/machineType/cpu/memoryMB,
+# imageId, disk, subnet, security group...) thì provider thay dần node cũ, từng node một cho mỗi group:
+# tạo node mới → node mới Ready → cordon + evict pod node cũ (tôn trọng PodDisruptionBudget) → xoá node cũ.
+# Đổi tags, chargeType, businessGroup, labels, taints không làm thay node. Chỉ chạy khi mọi node của group Ready và
+# không có scale up/repair đang chạy; node mới không join được thì dừng, giữ node cũ, thử lại sau repair.retryAfter.
+# Pod không có controller chặn drain (xoá tay). Nhớ sửa resources của group cho khớp máy mới. Chi tiết: docs/rollout.md.
+rollout:
+  enabled: true
 
 # --- Cloud --------------------------------------------------------------------------------------------------
 # Cloud chứa VM của node group: vngcloud (VNG Cloud vServer) hoặc ucloud (UCloud UHost). Mỗi release một cloud;

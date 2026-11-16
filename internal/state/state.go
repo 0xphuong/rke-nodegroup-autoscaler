@@ -30,8 +30,9 @@ const (
 	Running Phase = "Running"
 	// Deleting: VM deletion requested; the record goes away once the VM is gone and the Node object deleted.
 	Deleting Phase = "Deleting"
-	// Replacing: the node stopped working while its VM still runs; a replacement (ReplacedBy) is being
-	// created and this instance is deleted once the replacement is Ready. Not part of the target size.
+	// Replacing: the node stopped working while its VM still runs (repair), or was created with an outdated
+	// machine spec (rollout, Record.Rollout); a replacement (ReplacedBy) is being created and this instance is
+	// deleted once the replacement is Ready (drained first for a rollout). Not part of the target size.
 	Replacing Phase = "Replacing"
 	// Failed: VM errored or never registered within maxProvisionTime; reported to cluster-autoscaler,
 	// which deletes it.
@@ -60,7 +61,14 @@ type Record struct {
 	Replaces string `json:"replaces,omitempty"`
 	// RepairAfter: a replacement of this instance failed; no new attempt before then.
 	RepairAfter *time.Time `json:"repairAfter,omitempty"`
-	Message     string     `json:"message,omitempty"`
+	// Spec: the machine spec hash of the group when this instance was created (config.NodeGroup.SpecHash).
+	Spec string `json:"spec,omitempty"`
+	// Rollout: this Replacing instance is replaced because its spec is outdated, not because it broke. It keeps
+	// serving until the replacement is Ready, then it is drained before it is deleted.
+	Rollout bool `json:"rollout,omitempty"`
+	// DrainStartedAt: the rollout cordoned the node and started evicting its pods.
+	DrainStartedAt *time.Time `json:"drainStartedAt,omitempty"`
+	Message        string     `json:"message,omitempty"`
 }
 
 type Store struct {

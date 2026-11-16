@@ -2,6 +2,9 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -28,6 +31,26 @@ type Config struct {
 	MaxProvisionTime metav1.Duration `json:"maxProvisionTime"`
 	// Repair replaces nodes of a group that stopped working; node groups can override single fields.
 	Repair Repair `json:"repair"`
+	// Rollout replaces nodes created with an older machine spec of their group; node groups can override it.
+	Rollout Rollout `json:"rollout"`
+}
+
+// Rollout: when the machine spec of a group changes (see NodeGroup.SpecHash: image, flavor or machine type,
+// disk, network), its nodes created with the old spec are replaced one at a time: a new node is created, and
+// once it is Ready the old one is cordoned, drained (evictions, so PodDisruptionBudgets hold) and deleted.
+// See docs/rollout.md.
+type Rollout struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+func (r Rollout) On() bool { return r.Enabled == nil || *r.Enabled }
+
+// RolloutFor returns the rollout settings of a group: the top-level ones with the group's override applied.
+func (c *Config) RolloutFor(g NodeGroup) Rollout {
+	if g.Rollout != nil && g.Rollout.Enabled != nil {
+		return *g.Rollout
+	}
+	return c.Rollout
 }
 
 // Repair: a Running instance whose node is NotReady (or gone) is replaced by a new VM. If its VM still runs,
@@ -141,6 +164,52 @@ type NodeGroup struct {
 	UCloud    *UCloudServer   `json:"ucloud,omitempty"`
 	// Repair overrides fields of the top-level repair settings for this group.
 	Repair *Repair `json:"repair,omitempty"`
+	// Rollout overrides the top-level rollout settings for this group.
+	Rollout *Rollout `json:"rollout,omitempty"`
+}
+
+// SpecHash identifies the machine a group creates: its cloud block (VNG Cloud or UCloud) after the cloud-level
+// defaults are applied, without the fields that do not change the machine (tags; for UCloud also chargeType
+// and businessGroup). Nodes recorded with another hash are replaced by the rollout. Empty fields are left out,
+// so a field added in a later version does not change the hash of existing groups.
+func (g NodeGroup) SpecHash() string {
+	var spec any
+	var drop []string
+	switch {
+	case g.VNGCloud != nil:
+		spec, drop = g.VNGCloud, []string{"tags"}
+	case g.UCloud != nil:
+		spec, drop = g.UCloud, []string{"tags", "chargeType", "businessGroup"}
+	}
+	fields := map[string]any{}
+	if spec != nil {
+		b, _ := json.Marshal(spec)
+		_ = json.Unmarshal(b, &fields)
+	}
+	for _, k := range drop {
+		delete(fields, k)
+	}
+	for k, v := range fields {
+		switch x := v.(type) {
+		case nil:
+			delete(fields, k)
+		case string:
+			if x == "" {
+				delete(fields, k)
+			}
+		case float64:
+			if x == 0 {
+				delete(fields, k)
+			}
+		case []any:
+			if len(x) == 0 {
+				delete(fields, k)
+			}
+		}
+	}
+	b, _ := json.Marshal(fields) // map keys are sorted
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:6])
 }
 
 type Resources struct {

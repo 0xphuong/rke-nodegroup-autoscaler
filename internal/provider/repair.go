@@ -95,7 +95,7 @@ func (p *Provider) repair(ctx context.Context, g config.NodeGroup, r state.Recor
 		cur, _ := p.Store.Get(r.Name)
 		return p.startDelete(ctx, cur)
 	}
-	return p.startReplace(ctx, g, r, dead, why)
+	return p.startReplace(ctx, g, r, dead, false, why)
 }
 
 // repairBlocked reports (and logs) whether a repair of r must wait: another repair of the group is running, or
@@ -118,15 +118,19 @@ func (p *Provider) repairBlocked(ctx context.Context, g config.NodeGroup, r stat
 }
 
 // startReplace starts the replacement of r. dead: the old instance is deleted at once instead of after the
-// replacement is Ready.
-func (p *Provider) startReplace(ctx context.Context, g config.NodeGroup, r state.Record, dead bool, why string) error {
+// replacement is Ready. rollout: r is replaced for an outdated spec and drained once the replacement is Ready.
+func (p *Provider) startReplace(ctx context.Context, g config.NodeGroup, r state.Record, dead, rollout bool, why string) error {
 	name := p.pickNames(g, 1)[0]
-	p.Log.Warn("replacing instance", "node", r.Name, "group", g.Name, "replacement", name, "reason", why, "deleteFirst", dead)
+	if rollout {
+		p.Log.Info("replacing instance", "node", r.Name, "group", g.Name, "replacement", name, "reason", why, "rollout", true)
+	} else {
+		p.Log.Warn("replacing instance", "node", r.Name, "group", g.Name, "replacement", name, "reason", why, "deleteFirst", dead)
+	}
 
 	// recorded before the create: after a crash in between, the Replacing record points at no replacement and
 	// reconcile turns it back into Running
 	if err := p.Store.Update(ctx, r.Name, func(x *state.Record) bool {
-		x.Phase, x.ReplacedBy, x.Message = state.Replacing, name, why
+		x.Phase, x.ReplacedBy, x.Message, x.Rollout = state.Replacing, name, why, rollout
 		return true
 	}); err != nil {
 		return err
@@ -134,7 +138,7 @@ func (p *Provider) startReplace(ctx context.Context, g config.NodeGroup, r state
 	if err := p.createOne(ctx, g, name, r.Name); err != nil {
 		retry := p.Now().Add(createRetryAfter)
 		if uerr := p.Store.Update(ctx, r.Name, func(x *state.Record) bool {
-			x.Phase, x.ReplacedBy, x.RepairAfter = state.Running, "", &retry
+			x.Phase, x.ReplacedBy, x.RepairAfter, x.Rollout = state.Running, "", &retry, false
 			x.Message = "replacement could not be created: " + err.Error()
 			return true
 		}); uerr != nil {
@@ -163,13 +167,27 @@ func (p *Provider) reconcileReplacing(ctx context.Context, r state.Record, v *vi
 			retry, msg = now.Add(p.Config.RepairFor(g).RetryAfter.Duration), "replacement "+nr.Name+" failed: "+nr.Message
 		}
 		p.Log.Warn("replacement failed, keeping the instance", "node", r.Name, "replacement", r.ReplacedBy, "retryAfter", retry)
+		if r.DrainStartedAt != nil {
+			// the replacement went away while the old node was being drained: put the old node back in service
+			if n, ok := p.nodeOf(ctx, r, v); ok {
+				if err := p.setUnschedulable(ctx, n.Name, false); err != nil {
+					return err
+				}
+			}
+		}
 		return p.Store.Update(ctx, r.Name, func(x *state.Record) bool {
 			x.Phase, x.ReplacedBy, x.RepairAfter, x.Message = state.Running, "", &retry, msg
+			x.Rollout, x.DrainStartedAt = false, nil
 			return true
 		})
+	case nr.Phase == state.Running && r.Rollout:
+		return p.drainAndDelete(ctx, r, nr, v)
 	case nr.Phase == state.Running:
 		p.Log.Info("replacement is Ready, deleting the old instance", "node", r.Name, "replacement", nr.Name)
 		return p.startDelete(ctx, r)
+	}
+	if r.Rollout {
+		return nil // the old node keeps serving until the replacement is Ready
 	}
 	// replacement still being created. If the old node recovered meanwhile, keep it and cancel the replacement:
 	// keeping both would put the target size one above what it was (above maxSize for a full group).
@@ -209,7 +227,11 @@ func (p *Provider) overRepairBudget(ctx context.Context, g config.NodeGroup, v *
 		switch r.Phase {
 		case state.Replacing:
 			total++
-			unhealthy++
+			if !r.Rollout {
+				unhealthy++
+			} else if n, ok := p.nodeOf(ctx, r, v); !ok || !nodeReady(n) {
+				unhealthy++
+			}
 		case state.Running:
 			total++
 			if n, ok := p.nodeOf(ctx, r, v); !ok || !nodeReady(n) {

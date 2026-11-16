@@ -70,6 +70,11 @@ func (p *Provider) ReconcileOnce(ctx context.Context) {
 		}
 	}
 	p.reconcileOrphanNodes(ctx, v.nodes)
+	for _, g := range p.Config.NodeGroups {
+		if err := p.rollout(ctx, g, v); err != nil {
+			p.Log.Error("rollout", "group", g.Name, "err", err)
+		}
+	}
 }
 
 func (p *Provider) observe(ctx context.Context) (*view, error) {

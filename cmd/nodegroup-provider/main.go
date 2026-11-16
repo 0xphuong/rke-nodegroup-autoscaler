@@ -169,6 +169,9 @@ func run(log *slog.Logger, configPath, templatePath, cpInspectPath, bundleDir, g
 		Config: cfg, Driver: driver, Store: store, Kube: kube, BootCA: string(bootCA), CloudInit: cloudInit, Log: log,
 		Now: time.Now, NameRand: provider.RandomSuffix,
 	}
+	if err := p.AdoptSpecs(ctx); err != nil {
+		return err
+	}
 
 	// gRPC for cluster-autoscaler, mTLS only
 	grpcTLS, err := mtlsConfig(grpcTLSDir)

@@ -7,7 +7,9 @@ metadata:
   labels: {{- include "ngas.labels" . | nindent 4 }}
 ---
 # nodes: map Node <-> VM, wait for registration, delete the Node object after its VM is gone.
-# Deletion is further limited to node group nodes by the ValidatingAdmissionPolicy (node-deletion-policy.yaml).
+# Deletion is further limited to node group nodes by the ValidatingAdmissionPolicy (policies.yaml).
+# patch nodes, list pods, create pods/eviction: rollout drains a node group node before replacing it
+# (cordon + evictions, so PodDisruptionBudgets hold); the provider never deletes pods directly.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -16,7 +18,13 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [nodes]
-    verbs: [get, list, watch, delete]
+    verbs: [get, list, watch, delete, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

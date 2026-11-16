@@ -48,6 +48,10 @@ make push ARGS="..."         # scripts/release-image.sh: tests, multi-arch build
   runs, delete+create together when the VM is gone/stopped/error or the Node object is lost); **above minSize**
   only delete and let CA scale up. Circuit breaker (`repair.maxUnhealthyPercent`, per group and cluster wide), one
   repair per group, `notReadySince` kept in state. Full case list with timings: `docs/node-repair.md`.
+- `provider/rollout.go` replaces nodes whose `Record.Spec` differs from `NodeGroup.SpecHash()` (cloud block minus
+  tags/chargeType/businessGroup, empty fields dropped so new fields don't change hashes). Reuses repair's
+  Replacing phase with `Record.Rollout` set: create first, then cordon + evict (Eviction API) + delete. One step per
+  group, only while every instance is a Ready Running node. `AdoptSpecs` stamps pre-0.4.0 records at startup.
 - `cloud/` is the driver interface (`Create/Get/Delete`, `ErrNotFound`, `ErrRetryLater`, phases incl. `Stopped`).
   Drivers: `cloud/vngcloud` (vServer) and `cloud/ucloud` (UHost, behind a small `api` interface faked in tests),
   picked by `cloud.provider` in `main.go`. UCloud only terminates stopped hosts: `Delete` powers off and returns

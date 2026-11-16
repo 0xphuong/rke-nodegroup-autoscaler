@@ -4,6 +4,21 @@ Mọi thay đổi đáng chú ý của dự án được ghi ở đây. Định 
 version theo [SemVer](https://semver.org/). Mỗi version là một tag `vX.Y.Z`, đồng thời là `version`/`appVersion` của
 chart và tag image `docker.io/binhphuong/rke-nodegroup-autoscaler:X.Y.Z`.
 
+## [0.4.0] - 2026-11-16
+
+### Added
+- **Rollout: thay dần node cũ khi đổi cấu hình máy của group** (flavor/machineType/cpu/memoryMB, image, disk,
+  network, security group). Mỗi instance ghi hash cấu hình máy lúc tạo; node lệch hash được thay từng node một mỗi
+  group: tạo node mới trước, node mới Ready thì cordon và evict pod của node cũ (qua Eviction API, tôn trọng
+  PodDisruptionBudget; bỏ qua pod DaemonSet và static pod), rồi xoá. Chỉ chạy khi group ổn định (mọi node Ready,
+  không có scale up/repair); node mới lỗi thì dừng, giữ node cũ. `rollout.enabled` (mặc định bật), ghi đè theo group.
+  Xem `docs/rollout.md`.
+- RBAC của provider thêm `patch nodes`, `list pods`, `create pods/eviction` (cho drain).
+
+### Changed
+- Instance có từ trước 0.4.0 nhận hash cấu hình hiện tại lúc provider khởi động: nâng cấp không làm thay node nào.
+  Vì vậy đừng đổi cấu hình máy trong cùng lần nâng cấp lên 0.4.0.
+
 ## [0.3.3] - 2026-11-03
 
 Tag git đầu tiên sau `v0.2.6`: mã của 0.3.1 và 0.3.2 (chỉ phát hành image, không có tag) nằm trong tag này.
@@ -189,6 +204,7 @@ commit của 0.2.6.
 - Preflight: kiểm tra bộ cert node, CA của cluster, template worker so với cluster thật.
 - CI: test, lint chart; khi có tag thì build image amd64/arm64 và đẩy chart OCI.
 
+[0.4.0]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.6...v0.3.3
 [0.2.6]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.3...v0.2.6
 [0.2.3]: https://github.com/0xphuong/rke-nodegroup-autoscaler/compare/v0.2.2...v0.2.3
